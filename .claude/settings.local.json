@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(dir /s /b \"C:\\\\Users\\\\RICCO0829\\\\Documents\\\\Fandom\\\\OF_Polling_Test\\\\*.py\")",
+      "Bash(echo:*)",
+      "Bash(dir \"C:\\\\Users\\\\RICCO0829\\\\Documents\\\\Fandom\\\\OF_Polling_Test\" /b)"
+    ]
+  }
+}
