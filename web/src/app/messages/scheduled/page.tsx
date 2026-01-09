@@ -24,6 +24,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -47,6 +57,8 @@ import {
   FileText,
   Send,
   Undo2,
+  Trash2,
+  X,
 } from "lucide-react";
 import { dummyScheduledMessages, dummyAccounts, dummyActiveMessage } from "@/lib/dummy-data";
 import { useCaptions } from "@/hooks/useCaptions";
@@ -54,28 +66,168 @@ import { CaptionTemplate } from "@/types";
 import { ScheduledMessage } from "@/types";
 
 export default function ScheduledMessagesPage() {
-  const [currentDate, setCurrentDate] = useState(new Date(2026, 0, 8)); // Jan 8, 2026
-  const [selectedDate, setSelectedDate] = useState<Date | null>(new Date(2026, 0, 8));
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [selectedDate, setSelectedDate] = useState<Date | null>(new Date());
   const [selectedAccount, setSelectedAccount] = useState<string>("all");
   const [activeTab, setActiveTab] = useState("messages");
   const [isScheduleDialogOpen, setIsScheduleDialogOpen] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState<ScheduledMessage | null>(null);
   const [isCaptionDialogOpen, setIsCaptionDialogOpen] = useState(false);
-  const [messageCaption, setMessageCaption] = useState("");
-  const [messagePrice, setMessagePrice] = useState("15");
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editingMessage, setEditingMessage] = useState<ScheduledMessage | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [messageToDelete, setMessageToDelete] = useState<string | null>(null);
+
+  // Local state for scheduled messages (demo)
+  const [scheduledMessages, setScheduledMessages] = useState<ScheduledMessage[]>(dummyScheduledMessages);
+  const [activeMessage, setActiveMessage] = useState(dummyActiveMessage);
+
+  // Form state
+  const [formData, setFormData] = useState({
+    accountId: "1",
+    date: new Date().toISOString().split('T')[0],
+    time: "14:00",
+    messageType: "ppv" as "free" | "ppv",
+    caption: "",
+    price: "15",
+    recipientType: "all_subscribers" as "all_subscribers" | "all_chats" | "collection",
+    autoUnsendPrevious: true,
+  });
 
   // Load captions from API
   const { captions, loading: captionsLoading, incrementUse } = useCaptions();
 
+  // Reset form
+  const resetForm = () => {
+    setFormData({
+      accountId: "1",
+      date: selectedDate ? selectedDate.toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+      time: "14:00",
+      messageType: "ppv",
+      caption: "",
+      price: "15",
+      recipientType: "all_subscribers",
+      autoUnsendPrevious: true,
+    });
+    setIsEditMode(false);
+    setEditingMessage(null);
+  };
+
   // Handle caption selection
   const handleSelectCaption = async (caption: CaptionTemplate) => {
-    setMessageCaption(caption.content);
-    if (caption.suggestedPrice) {
-      setMessagePrice(caption.suggestedPrice.toString());
-    }
-    // Increment usage count
+    setFormData(prev => ({
+      ...prev,
+      caption: caption.content,
+      price: caption.suggestedPrice?.toString() || prev.price,
+      messageType: caption.type,
+    }));
     await incrementUse(caption.id);
     setIsCaptionDialogOpen(false);
+  };
+
+  // Get account info
+  const getAccountInfo = (accountId: string) => {
+    return dummyAccounts.find(a => a.id === accountId);
+  };
+
+  // Handle schedule new message
+  const handleScheduleMessage = () => {
+    const account = getAccountInfo(formData.accountId);
+    if (!account) return;
+
+    const scheduledAt = new Date(`${formData.date}T${formData.time}:00`).toISOString();
+
+    if (isEditMode && editingMessage) {
+      // Update existing message
+      setScheduledMessages(prev => prev.map(msg =>
+        msg.id === editingMessage.id
+          ? {
+              ...msg,
+              accountId: formData.accountId,
+              accountUsername: account.username,
+              messageContent: formData.caption,
+              price: formData.messageType === "ppv" ? parseFloat(formData.price) : 0,
+              recipientType: formData.recipientType,
+              recipientCount: formData.recipientType === "all_subscribers" ? account.subscriberCount : account.chatCount,
+              scheduledAt,
+              autoUnsendPrevious: formData.autoUnsendPrevious,
+            }
+          : msg
+      ));
+    } else {
+      // Create new message
+      const newMessage: ScheduledMessage = {
+        id: `new-${Date.now()}`,
+        accountId: formData.accountId,
+        accountUsername: account.username,
+        messageContent: formData.caption,
+        price: formData.messageType === "ppv" ? parseFloat(formData.price) : 0,
+        recipientType: formData.recipientType,
+        recipientCount: formData.recipientType === "all_subscribers" ? account.subscriberCount : account.chatCount,
+        scheduledAt,
+        status: "queued",
+        approvalStatus: "pending",
+        autoUnsendPrevious: formData.autoUnsendPrevious,
+      };
+      setScheduledMessages(prev => [...prev, newMessage]);
+    }
+
+    setIsScheduleDialogOpen(false);
+    resetForm();
+  };
+
+  // Handle approve message
+  const handleApproveMessage = (messageId: string) => {
+    setScheduledMessages(prev => prev.map(msg =>
+      msg.id === messageId ? { ...msg, approvalStatus: "approved" as const } : msg
+    ));
+  };
+
+  // Handle skip message
+  const handleSkipMessage = (messageId: string) => {
+    setScheduledMessages(prev => prev.map(msg =>
+      msg.id === messageId ? { ...msg, status: "cancelled" as const } : msg
+    ));
+  };
+
+  // Handle delete message
+  const handleDeleteMessage = (messageId: string) => {
+    setMessageToDelete(messageId);
+    setDeleteConfirmOpen(true);
+  };
+
+  const confirmDelete = () => {
+    if (messageToDelete) {
+      setScheduledMessages(prev => prev.filter(msg => msg.id !== messageToDelete));
+      if (selectedMessage?.id === messageToDelete) {
+        setSelectedMessage(null);
+      }
+    }
+    setDeleteConfirmOpen(false);
+    setMessageToDelete(null);
+  };
+
+  // Handle edit message
+  const handleEditMessage = (message: ScheduledMessage) => {
+    const msgDate = new Date(message.scheduledAt);
+    setFormData({
+      accountId: message.accountId,
+      date: msgDate.toISOString().split('T')[0],
+      time: msgDate.toTimeString().slice(0, 5),
+      messageType: message.price > 0 ? "ppv" : "free",
+      caption: message.messageContent,
+      price: message.price.toString(),
+      recipientType: message.recipientType,
+      autoUnsendPrevious: message.autoUnsendPrevious || false,
+    });
+    setIsEditMode(true);
+    setEditingMessage(message);
+    setIsScheduleDialogOpen(true);
+  };
+
+  // Handle unsend active message
+  const handleUnsendActiveMessage = () => {
+    setActiveMessage(null);
   };
 
   // Get days in current month
@@ -89,12 +241,10 @@ export default function ScheduledMessagesPage() {
 
     const days: (number | null)[] = [];
 
-    // Add empty cells for days before the first of the month
     for (let i = 0; i < startingDay; i++) {
       days.push(null);
     }
 
-    // Add days of the month
     for (let i = 1; i <= daysInMonth; i++) {
       days.push(i);
     }
@@ -106,11 +256,12 @@ export default function ScheduledMessagesPage() {
   const monthNames = ["January", "February", "March", "April", "May", "June",
                       "July", "August", "September", "October", "November", "December"];
 
-  // Filter messages by selected account
+  // Filter messages by selected account (exclude cancelled)
   const filteredMessages = useMemo(() => {
-    if (selectedAccount === "all") return dummyScheduledMessages;
-    return dummyScheduledMessages.filter(m => m.accountId === selectedAccount);
-  }, [selectedAccount]);
+    const activeMessages = scheduledMessages.filter(m => m.status !== "cancelled");
+    if (selectedAccount === "all") return activeMessages;
+    return activeMessages.filter(m => m.accountId === selectedAccount);
+  }, [selectedAccount, scheduledMessages]);
 
   // Get messages for a specific date
   const getMessagesForDate = (day: number | null) => {
@@ -135,9 +286,9 @@ export default function ScheduledMessagesPage() {
     }).sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
   }, [selectedDate, filteredMessages]);
 
-  // Count pending/unread for each account
+  // Count pending/scheduled for each account
   const getAccountNotifications = (accountId: string) => {
-    const accountMessages = dummyScheduledMessages.filter(m => m.accountId === accountId);
+    const accountMessages = scheduledMessages.filter(m => m.accountId === accountId && m.status !== "cancelled");
     const pending = accountMessages.filter(m => m.approvalStatus === 'pending').length;
     const scheduled = accountMessages.length;
     return { pending, scheduled };
@@ -157,7 +308,7 @@ export default function ScheduledMessagesPage() {
 
   const isToday = (day: number | null) => {
     if (!day) return false;
-    const today = new Date(2026, 0, 8); // Simulated today
+    const today = new Date();
     return day === today.getDate() &&
            currentDate.getMonth() === today.getMonth() &&
            currentDate.getFullYear() === today.getFullYear();
@@ -168,6 +319,18 @@ export default function ScheduledMessagesPage() {
     return day === selectedDate.getDate() &&
            currentDate.getMonth() === selectedDate.getMonth() &&
            currentDate.getFullYear() === selectedDate.getFullYear();
+  };
+
+  // Open dialog for new message
+  const openNewMessageDialog = () => {
+    resetForm();
+    if (selectedDate) {
+      setFormData(prev => ({
+        ...prev,
+        date: selectedDate.toISOString().split('T')[0],
+      }));
+    }
+    setIsScheduleDialogOpen(true);
   };
 
   return (
@@ -186,146 +349,10 @@ export default function ScheduledMessagesPage() {
             Operational
           </Badge>
           <Badge variant="outline">UTC-08:00</Badge>
-          <Dialog open={isScheduleDialogOpen} onOpenChange={setIsScheduleDialogOpen}>
-            <DialogTrigger asChild>
-              <Button>
-                <Plus className="h-4 w-4 mr-2" />
-                Schedule New
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader>
-                <DialogTitle>Schedule New Message</DialogTitle>
-                <DialogDescription>
-                  Create a new scheduled mass message
-                </DialogDescription>
-              </DialogHeader>
-              <div className="grid gap-4 py-4">
-                <div className="grid gap-2">
-                  <Label>Model</Label>
-                  <Select defaultValue="1">
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {dummyAccounts.filter(a => a.status === 'authenticated').map(account => (
-                        <SelectItem key={account.id} value={account.id}>
-                          @{account.username} ({account.modelId})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <Label>Date</Label>
-                    <Input type="date" defaultValue="2026-01-08" />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Time</Label>
-                    <Input type="time" defaultValue="14:00" />
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <input type="radio" name="schedule-type" id="one-time" defaultChecked />
-                    <Label htmlFor="one-time">One-time</Label>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <input type="radio" name="schedule-type" id="recurring" />
-                    <Label htmlFor="recurring">Recurring (every</Label>
-                    <Input type="number" className="w-16" defaultValue="1" />
-                    <span className="text-sm text-muted-foreground">hour)</span>
-                  </div>
-                </div>
-
-                <div className="grid gap-2">
-                  <Label>Message Type</Label>
-                  <div className="flex gap-4">
-                    <Button variant="outline" className="flex-1">
-                      <MessageSquare className="h-4 w-4 mr-2" />
-                      Free Mass Message
-                    </Button>
-                    <Button variant="default" className="flex-1">
-                      <DollarSign className="h-4 w-4 mr-2" />
-                      PPV Mass Message
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="grid gap-2">
-                  <div className="flex items-center justify-between">
-                    <Label>Caption</Label>
-                    <Button variant="ghost" size="sm" onClick={() => setIsCaptionDialogOpen(true)}>
-                      Load from Caption Vault
-                    </Button>
-                  </div>
-                  <Textarea
-                    placeholder="THE BEST $15 YOU'LL EVER SPEND, TRUST ME"
-                    className="min-h-[100px]"
-                    value={messageCaption}
-                    onChange={(e) => setMessageCaption(e.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Placeholders: {"{name}"} = fan name, ${"{price}"} = PPV price
-                  </p>
-                </div>
-
-                <div className="grid gap-2">
-                  <Label>PPV Price</Label>
-                  <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground">$</span>
-                    <Input
-                      type="number"
-                      className="w-24"
-                      value={messagePrice}
-                      onChange={(e) => setMessagePrice(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <div className="grid gap-2">
-                  <div className="flex items-center justify-between">
-                    <Label>Media</Label>
-                    <Button variant="ghost" size="sm">
-                      Browse Media Vault
-                    </Button>
-                  </div>
-                  <div className="flex gap-2 p-4 bg-muted/50 rounded-lg">
-                    <div className="w-16 h-16 rounded bg-muted flex items-center justify-center">
-                      <ImageIcon className="h-6 w-6 text-muted-foreground" />
-                    </div>
-                    <div className="w-16 h-16 rounded bg-muted flex items-center justify-center">
-                      <ImageIcon className="h-6 w-6 text-muted-foreground" />
-                    </div>
-                    <div className="w-16 h-16 rounded bg-muted flex items-center justify-center">
-                      <ImageIcon className="h-6 w-6 text-muted-foreground" />
-                    </div>
-                    <span className="text-sm text-muted-foreground self-center ml-2">
-                      3 items from "GIF Vault"
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Checkbox id="auto-unsend" defaultChecked />
-                  <Label htmlFor="auto-unsend" className="font-normal">
-                    Unsend previous MM when this one sends
-                  </Label>
-                </div>
-              </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setIsScheduleDialogOpen(false)}>
-                  Save as Draft
-                </Button>
-                <Button onClick={() => setIsScheduleDialogOpen(false)}>
-                  Schedule
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          <Button onClick={openNewMessageDialog}>
+            <Plus className="h-4 w-4 mr-2" />
+            Schedule New
+          </Button>
         </div>
       </div>
 
@@ -400,7 +427,7 @@ export default function ScheduledMessagesPage() {
                 <Button variant="ghost" size="icon" className="h-8 w-8">
                   <FileText className="h-4 w-4" />
                 </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8">
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={openNewMessageDialog}>
                   <Plus className="h-4 w-4" />
                 </Button>
               </div>
@@ -530,7 +557,7 @@ export default function ScheduledMessagesPage() {
           </CardHeader>
           <CardContent>
             {/* Currently Active Message */}
-            {isToday(selectedDate?.getDate() || 0) && dummyActiveMessage && (
+            {isToday(selectedDate?.getDate() || 0) && activeMessage && (
               <>
                 <div className="mb-4 p-3 rounded-lg border border-green-500/30 bg-green-500/10">
                   <div className="flex items-center justify-between mb-2">
@@ -538,15 +565,20 @@ export default function ScheduledMessagesPage() {
                       <Send className="h-3 w-3 mr-1" />
                       Currently Active
                     </Badge>
-                    <Button variant="ghost" size="sm" className="h-7 text-xs">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={handleUnsendActiveMessage}
+                    >
                       <Undo2 className="h-3 w-3 mr-1" />
                       Unsend
                     </Button>
                   </div>
                   <p className="text-sm text-muted-foreground mb-1">
-                    Sent: {new Date(dummyActiveMessage.sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    Sent: {new Date(activeMessage.sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </p>
-                  <p className="text-sm">"{dummyActiveMessage.messageContent}"</p>
+                  <p className="text-sm">&ldquo;{activeMessage.messageContent}&rdquo;</p>
                   <p className="text-xs text-muted-foreground mt-1">
                     Will auto-unsend when next message sends
                   </p>
@@ -560,7 +592,7 @@ export default function ScheduledMessagesPage() {
               {selectedDateMessages.length > 0 ? (
                 <div className="space-y-3">
                   <p className="text-xs text-muted-foreground uppercase font-medium">
-                    Scheduled for this day
+                    Scheduled for this day ({selectedDateMessages.length})
                   </p>
                   {selectedDateMessages.map((message) => (
                     <div
@@ -576,28 +608,44 @@ export default function ScheduledMessagesPage() {
                         <span className="text-sm font-medium">
                           {new Date(message.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
-                        <Badge
-                          variant={message.approvalStatus === 'approved' ? 'default' : 'secondary'}
-                          className={message.approvalStatus === 'approved' ? 'bg-green-500' : 'bg-yellow-500/20 text-yellow-600'}
-                        >
-                          {message.approvalStatus === 'approved' ? (
-                            <>
-                              <Check className="h-3 w-3 mr-1" />
-                              Approved
-                            </>
-                          ) : (
-                            <>
-                              <Clock className="h-3 w-3 mr-1" />
-                              Pending
-                            </>
-                          )}
-                        </Badge>
+                        <div className="flex items-center gap-1">
+                          <Badge
+                            variant={message.approvalStatus === 'approved' ? 'default' : 'secondary'}
+                            className={message.approvalStatus === 'approved' ? 'bg-green-500' : 'bg-yellow-500/20 text-yellow-600'}
+                          >
+                            {message.approvalStatus === 'approved' ? (
+                              <>
+                                <Check className="h-3 w-3 mr-1" />
+                                Approved
+                              </>
+                            ) : (
+                              <>
+                                <Clock className="h-3 w-3 mr-1" />
+                                Pending
+                              </>
+                            )}
+                          </Badge>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteMessage(message.id);
+                            }}
+                          >
+                            <X className="h-3 w-3" />
+                          </Button>
+                        </div>
                       </div>
+                      <p className="text-xs text-muted-foreground mb-1">
+                        @{message.accountUsername}
+                      </p>
                       <p className="text-sm font-medium mb-1">
                         {message.price > 0 ? `PPV MM ($${message.price})` : 'Free MM'}
                       </p>
                       <p className="text-sm text-muted-foreground line-clamp-2">
-                        "{message.messageContent}"
+                        &ldquo;{message.messageContent}&rdquo;
                       </p>
                       {message.mediaIds && message.mediaIds.length > 0 && (
                         <div className="flex items-center gap-1 mt-2 text-xs text-muted-foreground">
@@ -606,17 +654,40 @@ export default function ScheduledMessagesPage() {
                         </div>
                       )}
                       <div className="flex gap-2 mt-3">
-                        <Button variant="outline" size="sm" className="flex-1 h-7 text-xs">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1 h-7 text-xs"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEditMessage(message);
+                          }}
+                        >
                           <Pencil className="h-3 w-3 mr-1" />
                           Edit
                         </Button>
                         {message.approvalStatus === 'pending' ? (
-                          <Button size="sm" className="flex-1 h-7 text-xs bg-green-500 hover:bg-green-600">
+                          <Button
+                            size="sm"
+                            className="flex-1 h-7 text-xs bg-green-500 hover:bg-green-600"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleApproveMessage(message.id);
+                            }}
+                          >
                             <Check className="h-3 w-3 mr-1" />
                             Approve
                           </Button>
                         ) : (
-                          <Button variant="outline" size="sm" className="flex-1 h-7 text-xs">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="flex-1 h-7 text-xs"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSkipMessage(message.id);
+                            }}
+                          >
                             <SkipForward className="h-3 w-3 mr-1" />
                             Skip
                           </Button>
@@ -640,7 +711,7 @@ export default function ScheduledMessagesPage() {
               <Button
                 className="w-full"
                 variant="outline"
-                onClick={() => setIsScheduleDialogOpen(true)}
+                onClick={openNewMessageDialog}
               >
                 <Plus className="h-4 w-4 mr-2" />
                 Add Message
@@ -649,6 +720,184 @@ export default function ScheduledMessagesPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Schedule/Edit Message Dialog */}
+      <Dialog open={isScheduleDialogOpen} onOpenChange={(open) => {
+        setIsScheduleDialogOpen(open);
+        if (!open) resetForm();
+      }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{isEditMode ? "Edit Scheduled Message" : "Schedule New Message"}</DialogTitle>
+            <DialogDescription>
+              {isEditMode ? "Update your scheduled mass message" : "Create a new scheduled mass message"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label>Model</Label>
+              <Select
+                value={formData.accountId}
+                onValueChange={(value) => setFormData(prev => ({ ...prev, accountId: value }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {dummyAccounts.filter(a => a.status === 'authenticated').map(account => (
+                    <SelectItem key={account.id} value={account.id}>
+                      @{account.username} ({account.modelId})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label>Date</Label>
+                <Input
+                  type="date"
+                  value={formData.date}
+                  onChange={(e) => setFormData(prev => ({ ...prev, date: e.target.value }))}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label>Time</Label>
+                <Input
+                  type="time"
+                  value={formData.time}
+                  onChange={(e) => setFormData(prev => ({ ...prev, time: e.target.value }))}
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Recipients</Label>
+              <Select
+                value={formData.recipientType}
+                onValueChange={(value: "all_subscribers" | "all_chats" | "collection") =>
+                  setFormData(prev => ({ ...prev, recipientType: value }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all_subscribers">All Subscribers</SelectItem>
+                  <SelectItem value="all_chats">All Chats</SelectItem>
+                  <SelectItem value="collection">Select Collection</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Message Type</Label>
+              <div className="flex gap-4">
+                <Button
+                  variant={formData.messageType === "free" ? "default" : "outline"}
+                  className="flex-1"
+                  onClick={() => setFormData(prev => ({ ...prev, messageType: "free", price: "0" }))}
+                >
+                  <MessageSquare className="h-4 w-4 mr-2" />
+                  Free Mass Message
+                </Button>
+                <Button
+                  variant={formData.messageType === "ppv" ? "default" : "outline"}
+                  className="flex-1"
+                  onClick={() => setFormData(prev => ({ ...prev, messageType: "ppv", price: "15" }))}
+                >
+                  <DollarSign className="h-4 w-4 mr-2" />
+                  PPV Mass Message
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between">
+                <Label>Caption</Label>
+                <Button variant="ghost" size="sm" onClick={() => setIsCaptionDialogOpen(true)}>
+                  Load from Caption Vault
+                </Button>
+              </div>
+              <Textarea
+                placeholder="THE BEST $15 YOU'LL EVER SPEND, TRUST ME"
+                className="min-h-[100px]"
+                value={formData.caption}
+                onChange={(e) => setFormData(prev => ({ ...prev, caption: e.target.value }))}
+              />
+              <p className="text-xs text-muted-foreground">
+                Placeholders: {"{name}"} = fan name, ${"{price}"} = PPV price
+              </p>
+            </div>
+
+            {formData.messageType === "ppv" && (
+              <div className="grid gap-2">
+                <Label>PPV Price</Label>
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">$</span>
+                  <Input
+                    type="number"
+                    className="w-24"
+                    value={formData.price}
+                    onChange={(e) => setFormData(prev => ({ ...prev, price: e.target.value }))}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between">
+                <Label>Media</Label>
+                <Button variant="ghost" size="sm">
+                  Browse Media Vault
+                </Button>
+              </div>
+              <div className="flex gap-2 p-4 bg-muted/50 rounded-lg">
+                <div className="w-16 h-16 rounded bg-muted flex items-center justify-center">
+                  <ImageIcon className="h-6 w-6 text-muted-foreground" />
+                </div>
+                <div className="w-16 h-16 rounded bg-muted flex items-center justify-center">
+                  <ImageIcon className="h-6 w-6 text-muted-foreground" />
+                </div>
+                <div className="w-16 h-16 rounded bg-muted flex items-center justify-center">
+                  <ImageIcon className="h-6 w-6 text-muted-foreground" />
+                </div>
+                <span className="text-sm text-muted-foreground self-center ml-2">
+                  3 items from &ldquo;GIF Vault&rdquo;
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="auto-unsend"
+                checked={formData.autoUnsendPrevious}
+                onCheckedChange={(checked) =>
+                  setFormData(prev => ({ ...prev, autoUnsendPrevious: checked as boolean }))
+                }
+              />
+              <Label htmlFor="auto-unsend" className="font-normal">
+                Unsend previous MM when this one sends
+              </Label>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setIsScheduleDialogOpen(false);
+              resetForm();
+            }}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleScheduleMessage}
+              disabled={!formData.caption.trim()}
+            >
+              {isEditMode ? "Update" : "Schedule"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Caption Vault Dialog */}
       <Dialog open={isCaptionDialogOpen} onOpenChange={setIsCaptionDialogOpen}>
@@ -744,6 +993,24 @@ export default function ScheduledMessagesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Scheduled Message</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this scheduled message? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
