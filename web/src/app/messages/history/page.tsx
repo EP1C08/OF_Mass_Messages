@@ -33,8 +33,14 @@ import {
   Image as ImageIcon,
   Users,
   AlertTriangle,
+  TrendingUp,
+  Eye,
+  ShoppingCart,
+  Video,
+  FileImage,
 } from "lucide-react";
 import { dummyCampaigns, dummyAccounts } from "@/lib/dummy-data";
+import { Campaign } from "@/types";
 
 // Mock failed recipients
 const mockFailedRecipients = [
@@ -46,16 +52,35 @@ const mockFailedRecipients = [
 export default function CampaignHistoryPage() {
   const [selectedCampaign, setSelectedCampaign] = useState<string | null>(null);
   const [accountFilter, setAccountFilter] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<string>("date");
 
   const activeCampaign = dummyCampaigns.find(c => c.id === selectedCampaign);
-  const filteredCampaigns = accountFilter === "all"
-    ? dummyCampaigns
+
+  // Filter and sort campaigns
+  let filteredCampaigns = accountFilter === "all"
+    ? [...dummyCampaigns]
     : dummyCampaigns.filter(c => c.accountId === accountFilter);
+
+  // Sort campaigns
+  switch (sortBy) {
+    case "date":
+      filteredCampaigns.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+      break;
+    case "revenue":
+      filteredCampaigns.sort((a, b) => b.totalRevenue - a.totalRevenue);
+      break;
+    case "conversion":
+      filteredCampaigns.sort((a, b) => (b.conversionRate || 0) - (a.conversionRate || 0));
+      break;
+    case "rpm":
+      filteredCampaigns.sort((a, b) => (b.rpm || 0) - (a.rpm || 0));
+      break;
+  }
 
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "completed":
-        return <Badge className="bg-green-500"><CheckCircle2 className="h-3 w-3 mr-1" />Completed</Badge>;
+        return <Badge className="bg-green-500/20 text-green-500 border-green-500/30"><CheckCircle2 className="h-3 w-3 mr-1" />Completed</Badge>;
       case "running":
         return <Badge variant="secondary"><Clock className="h-3 w-3 mr-1" />Running</Badge>;
       case "failed":
@@ -65,6 +90,24 @@ export default function CampaignHistoryPage() {
     }
   };
 
+  const getMediaTypeIcon = (type: string) => {
+    switch (type) {
+      case "video":
+        return <Video className="h-3 w-3" />;
+      case "gif":
+        return <Video className="h-3 w-3" />;
+      default:
+        return <FileImage className="h-3 w-3" />;
+    }
+  };
+
+  // Calculate totals for filtered campaigns
+  const totals = filteredCampaigns.reduce((acc, c) => ({
+    revenue: acc.revenue + c.totalRevenue,
+    sent: acc.sent + c.recipientCount,
+    purchased: acc.purchased + (c.purchasedCount || 0),
+  }), { revenue: 0, sent: 0, purchased: 0 });
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -72,7 +115,7 @@ export default function CampaignHistoryPage() {
         <div>
           <h1 className="text-3xl font-bold text-foreground">Campaign History</h1>
           <p className="text-muted-foreground">
-            View past campaigns and their results
+            Track performance of caption + media combinations per creator
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -90,11 +133,59 @@ export default function CampaignHistoryPage() {
               ))}
             </SelectContent>
           </Select>
+          <Select value={sortBy} onValueChange={setSortBy}>
+            <SelectTrigger className="w-[150px]">
+              <SelectValue placeholder="Sort by" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="date">Latest</SelectItem>
+              <SelectItem value="revenue">Revenue</SelectItem>
+              <SelectItem value="conversion">Conversion</SelectItem>
+              <SelectItem value="rpm">RPM</SelectItem>
+            </SelectContent>
+          </Select>
           <Button variant="outline">
             <Download className="h-4 w-4 mr-2" />
-            Export All
+            Export
           </Button>
         </div>
+      </div>
+
+      {/* Summary Stats */}
+      <div className="grid grid-cols-3 gap-4">
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Total Revenue</p>
+                <p className="text-2xl font-bold text-green-500">${totals.revenue.toLocaleString()}</p>
+              </div>
+              <DollarSign className="h-8 w-8 text-green-500/20" />
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Messages Sent</p>
+                <p className="text-2xl font-bold">{totals.sent.toLocaleString()}</p>
+              </div>
+              <Users className="h-8 w-8 text-muted-foreground/20" />
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Total Purchases</p>
+                <p className="text-2xl font-bold">{totals.purchased.toLocaleString()}</p>
+              </div>
+              <ShoppingCart className="h-8 w-8 text-muted-foreground/20" />
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
@@ -110,52 +201,94 @@ export default function CampaignHistoryPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Date</TableHead>
-                    <TableHead>Account</TableHead>
-                    <TableHead>Recipients</TableHead>
-                    <TableHead>Success</TableHead>
-                    <TableHead>Status</TableHead>
+                    <TableHead>Creator</TableHead>
+                    <TableHead>Media</TableHead>
+                    <TableHead className="text-right">Conv %</TableHead>
+                    <TableHead className="text-right">Revenue</TableHead>
+                    <TableHead className="text-right">RPM</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredCampaigns.map((campaign) => {
-                    const successRate = (campaign.successCount / campaign.recipientCount * 100).toFixed(1);
-                    return (
-                      <TableRow
-                        key={campaign.id}
-                        className={`cursor-pointer ${selectedCampaign === campaign.id ? "bg-muted" : ""}`}
-                        onClick={() => setSelectedCampaign(campaign.id)}
-                      >
-                        <TableCell>
-                          <div>
-                            <p className="font-medium">
-                              {new Date(campaign.startedAt).toLocaleDateString()}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              {new Date(campaign.startedAt).toLocaleTimeString([], {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })}
-                            </p>
+                  {filteredCampaigns.map((campaign) => (
+                    <TableRow
+                      key={campaign.id}
+                      className={`cursor-pointer ${selectedCampaign === campaign.id ? "bg-muted" : ""}`}
+                      onClick={() => setSelectedCampaign(campaign.id)}
+                    >
+                      <TableCell>
+                        <div>
+                          <p className="font-medium">
+                            {new Date(campaign.startedAt).toLocaleDateString()}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {new Date(campaign.startedAt).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </p>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center text-primary text-xs font-medium">
+                            {campaign.accountUsername.slice(0, 2).toUpperCase()}
                           </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center text-primary text-xs font-medium">
-                              {campaign.accountUsername.slice(0, 2).toUpperCase()}
-                            </div>
-                            @{campaign.accountUsername}
+                          <span className="text-sm">@{campaign.accountUsername}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {campaign.mediaIds && campaign.mediaIds.length > 0 ? (
+                          <div className="flex items-center gap-1">
+                            {campaign.mediaThumbnails?.slice(0, 2).map((thumb, i) => (
+                              <div
+                                key={i}
+                                className="w-8 h-8 rounded bg-muted overflow-hidden relative"
+                              >
+                                <img
+                                  src={thumb}
+                                  alt=""
+                                  className="w-full h-full object-cover"
+                                />
+                                {campaign.mediaTypes?.[i] === 'video' && (
+                                  <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+                                    <Video className="h-3 w-3 text-white" />
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                            {campaign.mediaIds.length > 2 && (
+                              <span className="text-xs text-muted-foreground">+{campaign.mediaIds.length - 2}</span>
+                            )}
                           </div>
-                        </TableCell>
-                        <TableCell>{campaign.recipientCount.toLocaleString()}</TableCell>
-                        <TableCell>
-                          <span className={Number(successRate) >= 95 ? "text-green-500" : Number(successRate) >= 90 ? "text-yellow-500" : "text-red-500"}>
-                            {successRate}%
+                        ) : (
+                          <span className="text-xs text-muted-foreground">No media</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {campaign.conversionRate ? (
+                          <span className={campaign.conversionRate >= 20 ? "text-green-500 font-medium" : campaign.conversionRate >= 15 ? "text-yellow-500" : "text-muted-foreground"}>
+                            {campaign.conversionRate.toFixed(1)}%
                           </span>
-                        </TableCell>
-                        <TableCell>{getStatusBadge(campaign.status)}</TableCell>
-                      </TableRow>
-                    );
-                  })}
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {campaign.totalRevenue > 0 ? (
+                          <span className="text-green-500 font-medium">${campaign.totalRevenue}</span>
+                        ) : (
+                          <span className="text-muted-foreground">$0</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {campaign.rpm ? (
+                          <span className="font-medium">${campaign.rpm}</span>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
                 </TableBody>
               </Table>
             </CardContent>
@@ -187,76 +320,140 @@ export default function CampaignHistoryPage() {
                     {getStatusBadge(activeCampaign.status)}
                   </div>
 
-                  {activeCampaign.templateName && (
-                    <Badge variant="outline">{activeCampaign.templateName}</Badge>
+                  <Separator />
+
+                  {/* Media Preview */}
+                  {activeCampaign.mediaThumbnails && activeCampaign.mediaThumbnails.length > 0 && (
+                    <div>
+                      <p className="text-sm text-muted-foreground mb-2">Media Attached</p>
+                      <div className="flex gap-2">
+                        {activeCampaign.mediaThumbnails.map((thumb, i) => (
+                          <div
+                            key={i}
+                            className="w-16 h-16 rounded-lg bg-muted overflow-hidden relative"
+                          >
+                            <img
+                              src={thumb}
+                              alt=""
+                              className="w-full h-full object-cover"
+                            />
+                            {activeCampaign.mediaTypes?.[i] === 'video' && (
+                              <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                                <Video className="h-5 w-5 text-white" />
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   )}
+
+                  {/* Caption Preview */}
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-2">Caption</p>
+                    <div className="p-3 bg-muted rounded-lg">
+                      <p className="text-sm whitespace-pre-wrap">
+                        &ldquo;{activeCampaign.messageContent}&rdquo;
+                      </p>
+                    </div>
+                    {activeCampaign.price > 0 && (
+                      <Badge className="mt-2 bg-green-500/20 text-green-500 border-green-500/30">
+                        PPV ${activeCampaign.price}
+                      </Badge>
+                    )}
+                  </div>
 
                   <Separator />
 
-                  {/* Results */}
-                  <div className="space-y-3">
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground">Total Recipients</span>
-                      <span className="font-medium">{activeCampaign.recipientCount.toLocaleString()}</span>
+                  {/* Performance Metrics */}
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-3">Performance</p>
+                    <div className="space-y-3">
+                      {/* Delivery */}
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm flex items-center gap-2">
+                          <CheckCircle2 className="h-4 w-4 text-blue-500" />
+                          Delivery Rate
+                        </span>
+                        <span className="font-medium">
+                          {activeCampaign.deliveryRate?.toFixed(1) || 0}%
+                        </span>
+                      </div>
+
+                      {/* Opens */}
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm flex items-center gap-2">
+                          <Eye className="h-4 w-4 text-purple-500" />
+                          Open Rate
+                        </span>
+                        <span className="font-medium">
+                          {activeCampaign.openRate?.toFixed(1) || 0}%
+                          <span className="text-xs text-muted-foreground ml-1">
+                            ({activeCampaign.openedCount || 0}/{activeCampaign.successCount})
+                          </span>
+                        </span>
+                      </div>
+
+                      {/* Conversion (PPV only) */}
+                      {activeCampaign.price > 0 && (
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm flex items-center gap-2">
+                            <ShoppingCart className="h-4 w-4 text-green-500" />
+                            Conversion Rate
+                          </span>
+                          <span className={`font-medium ${(activeCampaign.conversionRate || 0) >= 20 ? "text-green-500" : ""}`}>
+                            {activeCampaign.conversionRate?.toFixed(1) || 0}%
+                            <span className="text-xs text-muted-foreground ml-1">
+                              ({activeCampaign.purchasedCount || 0}/{activeCampaign.openedCount || 0})
+                            </span>
+                          </span>
+                        </div>
+                      )}
+
+                      {/* RPM */}
+                      {activeCampaign.rpm && (
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm flex items-center gap-2">
+                            <TrendingUp className="h-4 w-4 text-amber-500" />
+                            RPM
+                          </span>
+                          <span className="font-medium">${activeCampaign.rpm}</span>
+                        </div>
+                      )}
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground flex items-center gap-1">
-                        <CheckCircle2 className="h-3 w-3 text-green-500" />
-                        Successful
-                      </span>
-                      <span className="font-medium text-green-500">{activeCampaign.successCount.toLocaleString()}</span>
+                  </div>
+
+                  {/* Revenue Card */}
+                  {activeCampaign.totalRevenue > 0 && (
+                    <div className="p-4 bg-green-500/10 rounded-lg border border-green-500/20">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-sm text-green-500">Total Revenue</span>
+                          <p className="text-2xl font-bold text-green-500">
+                            ${activeCampaign.totalRevenue.toLocaleString()}
+                          </p>
+                        </div>
+                        <DollarSign className="h-8 w-8 text-green-500/30" />
+                      </div>
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground flex items-center gap-1">
-                        <XCircle className="h-3 w-3 text-red-500" />
-                        Failed
-                      </span>
-                      <span className="font-medium text-red-500">{activeCampaign.failedCount}</span>
+                  )}
+
+                  {/* Delivery Stats */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Sent</span>
+                      <span>{activeCampaign.successCount.toLocaleString()} / {activeCampaign.recipientCount.toLocaleString()}</span>
                     </div>
                     <Progress
                       value={(activeCampaign.successCount / activeCampaign.recipientCount) * 100}
                       className="h-2"
                     />
-                  </div>
-
-                  <Separator />
-
-                  {/* Message Preview */}
-                  <div>
-                    <p className="text-sm text-muted-foreground mb-2">Message</p>
-                    <div className="p-3 bg-muted rounded-lg">
-                      <p className="text-sm whitespace-pre-wrap">
-                        {activeCampaign.messageContent.slice(0, 100)}...
+                    {activeCampaign.failedCount > 0 && (
+                      <p className="text-xs text-red-500">
+                        {activeCampaign.failedCount} failed
                       </p>
-                    </div>
-                  </div>
-
-                  {/* Stats */}
-                  <div className="flex items-center gap-4 text-sm">
-                    {activeCampaign.mediaIds && activeCampaign.mediaIds.length > 0 && (
-                      <div className="flex items-center gap-1 text-muted-foreground">
-                        <ImageIcon className="h-4 w-4" />
-                        <span>{activeCampaign.mediaIds.length} media</span>
-                      </div>
-                    )}
-                    {activeCampaign.price > 0 && (
-                      <div className="flex items-center gap-1 text-green-500">
-                        <DollarSign className="h-4 w-4" />
-                        <span>${activeCampaign.price} PPV</span>
-                      </div>
                     )}
                   </div>
-
-                  {activeCampaign.totalRevenue > 0 && (
-                    <div className="p-3 bg-green-500/10 rounded-lg border border-green-500/20">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-green-500">Total Revenue</span>
-                        <span className="text-lg font-bold text-green-500">
-                          ${activeCampaign.totalRevenue.toLocaleString()}
-                        </span>
-                      </div>
-                    </div>
-                  )}
 
                   {/* Failed Recipients */}
                   {activeCampaign.failedCount > 0 && (
@@ -267,8 +464,8 @@ export default function CampaignHistoryPage() {
                           <AlertTriangle className="h-4 w-4 text-yellow-500" />
                           Failed Recipients
                         </p>
-                        <ScrollArea className="h-[120px]">
-                          <div className="space-y-2">
+                        <ScrollArea className="h-[100px]">
+                          <div className="space-y-1">
                             {mockFailedRecipients.map((item, index) => (
                               <div
                                 key={index}
@@ -290,7 +487,7 @@ export default function CampaignHistoryPage() {
                     {activeCampaign.failedCount > 0 && (
                       <Button variant="outline" className="flex-1">
                         <RefreshCw className="h-4 w-4 mr-2" />
-                        Retry Failed
+                        Retry
                       </Button>
                     )}
                     <Button variant="outline" className="flex-1">

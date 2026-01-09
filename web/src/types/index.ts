@@ -81,15 +81,25 @@ export interface Campaign {
   accountUsername: string;
   messageContent: string;
   mediaIds?: string[];
+  mediaThumbnails?: string[];
+  mediaTypes?: ('photo' | 'video' | 'gif')[];
+  captionId?: string;
   price: number;
   recipientCount: number;
   successCount: number;
   failedCount: number;
+  openedCount?: number;
+  purchasedCount?: number;
   totalRevenue: number;
   startedAt: string;
   completedAt?: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   templateName?: string;
+  // Calculated metrics
+  deliveryRate?: number;
+  openRate?: number;
+  conversionRate?: number;
+  rpm?: number;
 }
 
 export interface CampaignResult {
