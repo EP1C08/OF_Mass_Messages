@@ -1,0 +1,91 @@
+[
+  {
+    "id": "1",
+    "content": "THE BEST ${price} YOU'LL EVER SPEND, TRUST ME",
+    "type": "ppv",
+    "suggestedPrice": 7,
+    "priceTier": "low",
+    "tags": ["confident", "direct"],
+    "useCount": 12,
+    "lastUsedAt": "2026-01-07T14:30:00Z",
+    "conversionRate": 8.5,
+    "totalRevenue": 714,
+    "rpm": 595
+  },
+  {
+    "id": "2",
+    "content": "I made this just for you {name}... don't show anyone",
+    "type": "ppv",
+    "suggestedPrice": 15,
+    "priceTier": "medium",
+    "tags": ["personal", "exclusive"],
+    "useCount": 8,
+    "lastUsedAt": "2026-01-04T10:15:00Z",
+    "conversionRate": 12.3,
+    "totalRevenue": 1476,
+    "rpm": 615
+  },
+  {
+    "id": "3",
+    "content": "You asked for it... here's that video you wanted",
+    "type": "ppv",
+    "suggestedPrice": 25,
+    "priceTier": "high",
+    "tags": ["request", "personal"],
+    "useCount": 5,
+    "lastUsedAt": "2026-01-02T18:45:00Z",
+    "conversionRate": 15.8,
+    "totalRevenue": 1975,
+    "rpm": 790
+  },
+  {
+    "id": "4",
+    "content": "This is what you came here for. Unlock now",
+    "type": "ppv",
+    "suggestedPrice": 20,
+    "priceTier": "medium",
+    "tags": ["confident", "direct"],
+    "useCount": 13,
+    "lastUsedAt": "2026-01-08T09:00:00Z",
+    "conversionRate": 9.5,
+    "totalRevenue": 2470,
+    "rpm": 533
+  },
+  {
+    "id": "5",
+    "content": "Best ${price} you'll spend today, trust me babe",
+    "type": "ppv",
+    "suggestedPrice": 70,
+    "priceTier": "high",
+    "tags": ["confident", "flirty"],
+    "useCount": 15,
+    "lastUsedAt": "2026-01-09T08:20:00Z",
+    "conversionRate": 9.2,
+    "totalRevenue": 9660,
+    "rpm": 516
+  },
+  {
+    "id": "6",
+    "content": "Hey babe! Just checking in... miss you",
+    "type": "free",
+    "tags": ["friendly", "casual"],
+    "useCount": 45,
+    "lastUsedAt": "2026-01-08T16:30:00Z"
+  },
+  {
+    "id": "7",
+    "content": "Good morning {name}! Hope you have an amazing day!",
+    "type": "free",
+    "tags": ["friendly", "personal"],
+    "useCount": 38,
+    "lastUsedAt": "2026-01-09T07:00:00Z"
+  },
+  {
+    "id": "8",
+    "content": "Missing you today...",
+    "type": "free",
+    "tags": ["flirty", "casual"],
+    "useCount": 22,
+    "lastUsedAt": "2026-01-06T12:00:00Z"
+  }
+]

@@ -17,6 +17,7 @@ import {
   Users2,
   ChevronLeft,
   ChevronRight,
+  Type,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -26,6 +27,7 @@ const navItems = [
   { href: "/accounts", label: "Accounts", icon: Users },
   { href: "/messages/compose", label: "Compose", icon: MessageSquare },
   { href: "/templates", label: "Templates", icon: FileText },
+  { href: "/captions", label: "Captions", icon: Type },
   { href: "/messages/scheduled", label: "Scheduled", icon: Calendar },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/vault", label: "Vault", icon: Image },

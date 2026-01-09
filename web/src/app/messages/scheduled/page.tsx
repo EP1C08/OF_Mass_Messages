@@ -48,7 +48,9 @@ import {
   Send,
   Undo2,
 } from "lucide-react";
-import { dummyScheduledMessages, dummyAccounts, dummyActiveMessage, dummyCaptionTemplates } from "@/lib/dummy-data";
+import { dummyScheduledMessages, dummyAccounts, dummyActiveMessage } from "@/lib/dummy-data";
+import { useCaptions } from "@/hooks/useCaptions";
+import { CaptionTemplate } from "@/types";
 import { ScheduledMessage } from "@/types";
 
 export default function ScheduledMessagesPage() {
@@ -58,6 +60,23 @@ export default function ScheduledMessagesPage() {
   const [activeTab, setActiveTab] = useState("messages");
   const [isScheduleDialogOpen, setIsScheduleDialogOpen] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState<ScheduledMessage | null>(null);
+  const [isCaptionDialogOpen, setIsCaptionDialogOpen] = useState(false);
+  const [messageCaption, setMessageCaption] = useState("");
+  const [messagePrice, setMessagePrice] = useState("15");
+
+  // Load captions from API
+  const { captions, loading: captionsLoading, incrementUse } = useCaptions();
+
+  // Handle caption selection
+  const handleSelectCaption = async (caption: CaptionTemplate) => {
+    setMessageCaption(caption.content);
+    if (caption.suggestedPrice) {
+      setMessagePrice(caption.suggestedPrice.toString());
+    }
+    // Increment usage count
+    await incrementUse(caption.id);
+    setIsCaptionDialogOpen(false);
+  };
 
   // Get days in current month
   const getDaysInMonth = (date: Date) => {
@@ -239,13 +258,15 @@ export default function ScheduledMessagesPage() {
                 <div className="grid gap-2">
                   <div className="flex items-center justify-between">
                     <Label>Caption</Label>
-                    <Button variant="ghost" size="sm">
+                    <Button variant="ghost" size="sm" onClick={() => setIsCaptionDialogOpen(true)}>
                       Load from Caption Vault
                     </Button>
                   </div>
                   <Textarea
-                    placeholder="THE BEST $15 YOU'LL EVER SPEND, TRUST ME 🔥"
+                    placeholder="THE BEST $15 YOU'LL EVER SPEND, TRUST ME"
                     className="min-h-[100px]"
+                    value={messageCaption}
+                    onChange={(e) => setMessageCaption(e.target.value)}
                   />
                   <p className="text-xs text-muted-foreground">
                     Placeholders: {"{name}"} = fan name, ${"{price}"} = PPV price
@@ -256,7 +277,12 @@ export default function ScheduledMessagesPage() {
                   <Label>PPV Price</Label>
                   <div className="flex items-center gap-2">
                     <span className="text-muted-foreground">$</span>
-                    <Input type="number" className="w-24" defaultValue="15" />
+                    <Input
+                      type="number"
+                      className="w-24"
+                      value={messagePrice}
+                      onChange={(e) => setMessagePrice(e.target.value)}
+                    />
                   </div>
                 </div>
 
@@ -623,6 +649,101 @@ export default function ScheduledMessagesPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Caption Vault Dialog */}
+      <Dialog open={isCaptionDialogOpen} onOpenChange={setIsCaptionDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Caption Vault</DialogTitle>
+            <DialogDescription>
+              Select a caption template to use in your message
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            {captionsLoading ? (
+              <div className="text-center py-8 text-muted-foreground">
+                Loading captions...
+              </div>
+            ) : captions.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <FileText className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                <p>No captions found</p>
+              </div>
+            ) : (
+              <ScrollArea className="h-[400px] pr-4">
+                <div className="space-y-2">
+                  {/* PPV Captions */}
+                  {captions.filter(c => c.type === 'ppv').length > 0 && (
+                    <>
+                      <p className="text-xs font-medium text-muted-foreground uppercase mb-2">PPV Captions</p>
+                      {captions.filter(c => c.type === 'ppv').map((caption) => (
+                        <button
+                          key={caption.id}
+                          onClick={() => handleSelectCaption(caption)}
+                          className="w-full p-3 rounded-lg border hover:border-primary hover:bg-primary/5 transition-colors text-left"
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <Badge variant="outline" className="text-xs">
+                              ${caption.suggestedPrice} suggested
+                            </Badge>
+                            <span className="text-xs text-muted-foreground">
+                              Used {caption.useCount}x
+                            </span>
+                          </div>
+                          <p className="text-sm">{caption.content}</p>
+                          {caption.priceTier && (
+                            <Badge
+                              variant="secondary"
+                              className={`mt-2 text-xs ${
+                                caption.priceTier === 'low'
+                                  ? 'bg-green-500/20 text-green-600'
+                                  : caption.priceTier === 'medium'
+                                  ? 'bg-yellow-500/20 text-yellow-600'
+                                  : 'bg-red-500/20 text-red-600'
+                              }`}
+                            >
+                              {caption.priceTier} tier
+                            </Badge>
+                          )}
+                        </button>
+                      ))}
+                    </>
+                  )}
+
+                  {/* Free Captions */}
+                  {captions.filter(c => c.type === 'free').length > 0 && (
+                    <>
+                      <p className="text-xs font-medium text-muted-foreground uppercase mt-4 mb-2">Free Captions</p>
+                      {captions.filter(c => c.type === 'free').map((caption) => (
+                        <button
+                          key={caption.id}
+                          onClick={() => handleSelectCaption(caption)}
+                          className="w-full p-3 rounded-lg border hover:border-primary hover:bg-primary/5 transition-colors text-left"
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <Badge variant="outline" className="text-xs bg-muted">
+                              Free
+                            </Badge>
+                            <span className="text-xs text-muted-foreground">
+                              Used {caption.useCount}x
+                            </span>
+                          </div>
+                          <p className="text-sm">{caption.content}</p>
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+              </ScrollArea>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsCaptionDialogOpen(false)}>
+              Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -67,7 +67,12 @@ export interface CaptionTemplate {
   type: 'free' | 'ppv';
   suggestedPrice?: number;
   priceTier?: 'low' | 'medium' | 'high';
+  tags?: string[];
   useCount: number;
+  lastUsedAt?: string;
+  conversionRate?: number;
+  totalRevenue?: number;
+  rpm?: number;
 }
 
 export interface Campaign {

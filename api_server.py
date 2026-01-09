@@ -6,8 +6,10 @@ Run with: uvicorn api_server:app --reload --port 8001
 """
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 from fastapi import FastAPI, HTTPException, Query
@@ -407,6 +409,174 @@ async def clear_auth_cache():
     """Clear the authentication cache and close all sessions."""
     await close_all_sessions()
     return {"success": True, "message": "Cache cleared"}
+
+
+# ============================================================================
+# Captions API
+# ============================================================================
+
+CAPTIONS_FILE = Path(__file__).parent / "data" / "captions.json"
+
+
+class CaptionTemplate(BaseModel):
+    id: str
+    content: str
+    type: str  # 'ppv' or 'free'
+    suggestedPrice: Optional[int] = None
+    priceTier: Optional[str] = None  # 'low', 'medium', 'high'
+    tags: Optional[List[str]] = None
+    useCount: Optional[int] = 0
+    conversionRate: Optional[float] = None
+    totalRevenue: Optional[float] = None
+    rpm: Optional[float] = None  # Revenue per thousand messages
+
+
+class CreateCaptionRequest(BaseModel):
+    content: str
+    type: str
+    suggestedPrice: Optional[int] = None
+    priceTier: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+class UpdateCaptionRequest(BaseModel):
+    content: Optional[str] = None
+    type: Optional[str] = None
+    suggestedPrice: Optional[int] = None
+    priceTier: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+def load_captions() -> List[dict]:
+    """Load captions from JSON file."""
+    if not CAPTIONS_FILE.exists():
+        return []
+    try:
+        with open(CAPTIONS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        logger.error(f"Error loading captions: {e}")
+        return []
+
+
+def save_captions(captions: List[dict]) -> bool:
+    """Save captions to JSON file."""
+    try:
+        CAPTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(CAPTIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(captions, f, indent=2, ensure_ascii=False)
+        return True
+    except IOError as e:
+        logger.error(f"Error saving captions: {e}")
+        return False
+
+
+@app.get("/captions", response_model=List[CaptionTemplate])
+async def get_captions():
+    """Get all caption templates."""
+    captions = load_captions()
+    return captions
+
+
+@app.get("/captions/{caption_id}", response_model=CaptionTemplate)
+async def get_caption(caption_id: str):
+    """Get a specific caption by ID."""
+    captions = load_captions()
+    for caption in captions:
+        if caption.get("id") == caption_id:
+            return caption
+    raise HTTPException(status_code=404, detail="Caption not found")
+
+
+@app.post("/captions", response_model=CaptionTemplate)
+async def create_caption(request: CreateCaptionRequest):
+    """Create a new caption."""
+    captions = load_captions()
+
+    # Generate new ID
+    max_id = 0
+    for c in captions:
+        try:
+            max_id = max(max_id, int(c.get("id", 0)))
+        except ValueError:
+            pass
+    new_id = str(max_id + 1)
+
+    new_caption = {
+        "id": new_id,
+        "content": request.content,
+        "type": request.type,
+        "suggestedPrice": request.suggestedPrice,
+        "priceTier": request.priceTier,
+        "tags": request.tags or [],
+        "useCount": 0,
+        "conversionRate": None,
+        "totalRevenue": None,
+        "rpm": None
+    }
+
+    captions.append(new_caption)
+    if not save_captions(captions):
+        raise HTTPException(status_code=500, detail="Failed to save caption")
+
+    return new_caption
+
+
+@app.put("/captions/{caption_id}", response_model=CaptionTemplate)
+async def update_caption(caption_id: str, request: UpdateCaptionRequest):
+    """Update an existing caption."""
+    captions = load_captions()
+
+    for i, caption in enumerate(captions):
+        if caption.get("id") == caption_id:
+            if request.content is not None:
+                caption["content"] = request.content
+            if request.type is not None:
+                caption["type"] = request.type
+            if request.suggestedPrice is not None:
+                caption["suggestedPrice"] = request.suggestedPrice
+            if request.priceTier is not None:
+                caption["priceTier"] = request.priceTier
+            if request.tags is not None:
+                caption["tags"] = request.tags
+
+            captions[i] = caption
+            if not save_captions(captions):
+                raise HTTPException(status_code=500, detail="Failed to save caption")
+            return caption
+
+    raise HTTPException(status_code=404, detail="Caption not found")
+
+
+@app.delete("/captions/{caption_id}")
+async def delete_caption(caption_id: str):
+    """Delete a caption."""
+    captions = load_captions()
+
+    for i, caption in enumerate(captions):
+        if caption.get("id") == caption_id:
+            captions.pop(i)
+            if not save_captions(captions):
+                raise HTTPException(status_code=500, detail="Failed to save captions")
+            return {"success": True, "message": f"Caption {caption_id} deleted"}
+
+    raise HTTPException(status_code=404, detail="Caption not found")
+
+
+@app.post("/captions/{caption_id}/increment-use")
+async def increment_caption_use(caption_id: str):
+    """Increment the use count of a caption."""
+    captions = load_captions()
+
+    for i, caption in enumerate(captions):
+        if caption.get("id") == caption_id:
+            caption["useCount"] = caption.get("useCount", 0) + 1
+            captions[i] = caption
+            if not save_captions(captions):
+                raise HTTPException(status_code=500, detail="Failed to save caption")
+            return {"success": True, "useCount": caption["useCount"]}
+
+    raise HTTPException(status_code=404, detail="Caption not found")
 
 
 if __name__ == "__main__":
