@@ -1,5 +1,5 @@
 """Collections (Lists) management for OnlyFans."""
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Union
 
 if TYPE_CHECKING:
     from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthModel
@@ -16,11 +16,12 @@ class CollectionsManager:
         lists = await self.auth.get_lists()
         return lists or []
 
-    async def get_collection_by_id(self, list_id: int) -> dict[str, Any] | None:
-        """Get a specific collection by ID."""
+    async def get_collection_by_id(self, list_id: Union[int, str]) -> dict[str, Any] | None:
+        """Get a specific collection by ID (can be int or string like 'fans')."""
         lists = await self.get_all_collections()
         for list_item in lists:
-            if list_item.get("id") == list_id:
+            # Compare as strings to handle both int and string IDs
+            if str(list_item.get("id")) == str(list_id):
                 return list_item
         return None
 
@@ -32,9 +33,28 @@ class CollectionsManager:
                 return list_item
         return None
 
-    async def get_collection_users(self, list_id: int) -> list[dict[str, Any]]:
-        """Get all users in a collection."""
-        users = await self.auth.get_lists_users(list_id)
+    async def get_collection_users(
+        self,
+        list_id: Union[int, str],
+        limit: int = 100,
+        offset: int = 0,
+        fetch_all: bool = True
+    ) -> list[dict[str, Any]]:
+        """Get users in a collection.
+
+        Args:
+            list_id: The collection ID
+            limit: Number of users per page
+            offset: Starting offset for pagination
+            fetch_all: If True, fetches all users recursively. If False, returns just one page.
+        """
+        # When fetch_all=False, use check=True to prevent recursive fetching
+        users = await self.auth.get_lists_users(
+            list_id,
+            check=not fetch_all,
+            limit=limit,
+            offset=offset
+        )
         return users or []
 
     async def create_collection(self, name: str) -> dict[str, Any] | None:
@@ -50,7 +70,7 @@ class CollectionsManager:
         except Exception:
             return None
 
-    async def delete_collection(self, list_id: int) -> bool:
+    async def delete_collection(self, list_id: Union[int, str]) -> bool:
         """Delete a collection."""
         url = f"https://onlyfans.com/api2/v2/lists/{list_id}"
 
@@ -60,7 +80,7 @@ class CollectionsManager:
         except Exception:
             return False
 
-    async def add_user_to_collection(self, user_id: int, list_id: int) -> bool:
+    async def add_user_to_collection(self, user_id: int, list_id: Union[int, str]) -> bool:
         """Add a user to a collection."""
         url = f"https://onlyfans.com/api2/v2/lists/{list_id}/users"
 
@@ -89,7 +109,7 @@ class CollectionsManager:
 
         return False
 
-    async def remove_user_from_collection(self, user_id: int, list_id: int) -> bool:
+    async def remove_user_from_collection(self, user_id: int, list_id: Union[int, str]) -> bool:
         """Remove a user from a collection."""
         url = f"https://onlyfans.com/api2/v2/lists/{list_id}/users/{user_id}"
 
@@ -103,7 +123,7 @@ class CollectionsManager:
         except Exception:
             return False
 
-    async def is_user_in_collection(self, user_id: int, list_id: int) -> bool:
+    async def is_user_in_collection(self, user_id: int, list_id: Union[int, str]) -> bool:
         """Check if a user is in a collection."""
         users = await self.get_collection_users(list_id)
         return any(str(u.get("id")) == str(user_id) for u in users)

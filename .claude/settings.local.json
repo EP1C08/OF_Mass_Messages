@@ -4,7 +4,17 @@
       "Bash(mkdir:*)",
       "Bash(dir /s /b \"C:\\\\Users\\\\RICCO0829\\\\Documents\\\\Fandom\\\\OF_Polling_Test\\\\*.py\")",
       "Bash(echo:*)",
-      "Bash(dir \"C:\\\\Users\\\\RICCO0829\\\\Documents\\\\Fandom\\\\OF_Polling_Test\" /b)"
+      "Bash(dir \"C:\\\\Users\\\\RICCO0829\\\\Documents\\\\Fandom\\\\OF_Polling_Test\" /b)",
+      "Bash(npx create-next-app@latest:*)",
+      "Bash(npx shadcn@latest init -d)",
+      "Bash(npx shadcn@latest add:*)",
+      "Bash(python:*)",
+      "Bash(curl:*)",
+      "Bash(python -m json.tool:*)",
+      "Bash(findstr:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx next lint:*)",
+      "Bash(npx eslint:*)"
     ]
   }
 }

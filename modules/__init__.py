@@ -7,6 +7,7 @@ from modules.encryption import EncryptionManager
 from modules.gologin_manager import GoLoginManager, get_gologin_credentials, get_gologin_proxy
 from modules.mass_message import MassMessenger, Recipient, MessageResult
 from modules.collections import CollectionsManager
+from modules.vault_manager import VaultManager, get_vault_manager
 
 __all__ = [
     "authenticate_from_db",
@@ -23,4 +24,6 @@ __all__ = [
     "Recipient",
     "MessageResult",
     "CollectionsManager",
+    "VaultManager",
+    "get_vault_manager",
 ]
