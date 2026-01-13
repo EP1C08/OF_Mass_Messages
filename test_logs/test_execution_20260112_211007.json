@@ -1,0 +1,49 @@
+{
+  "timestamp": "2026-01-12T13:09:58.148979+00:00",
+  "account_id": "248797134",
+  "test_user_id": "528621767",
+  "message_content": "Hiiiiii {name}",
+  "media_ids": [
+    "3490548556"
+  ],
+  "price": 0.0,
+  "auto_unsend_previous": true,
+  "auto_unsend_after_minutes": null,
+  "dry_run": false,
+  "steps": [
+    {
+      "action": "parsed_user_id",
+      "user_id": 528621767
+    },
+    {
+      "action": "authenticated",
+      "username": "Ayumi"
+    },
+    {
+      "action": "checking_active_message"
+    },
+    {
+      "action": "no_active_message_found"
+    },
+    {
+      "action": "prepared_recipient",
+      "user_id": 528621767,
+      "username": "u528621767",
+      "name": "TORYOusi"
+    },
+    {
+      "action": "sending_message"
+    },
+    {
+      "action": "message_sent",
+      "success": true,
+      "message_id": "8189407012083"
+    },
+    {
+      "action": "updated_active_tracking",
+      "message_id": "8189407012083"
+    }
+  ],
+  "account_username": "Ayumi",
+  "success": true
+}

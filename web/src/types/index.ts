@@ -39,15 +39,28 @@ export interface ScheduledMessage {
   messageContent: string;
   mediaIds?: string[];
   price: number;
-  recipientType: 'all_subscribers' | 'all_chats' | 'collection';
+  recipientType: 'all_subscribers' | 'all_chats' | 'collection' | 'test_user';
   recipientCount: number;
   collectionId?: string;
   collectionName?: string;
+  testUserId?: string;
   scheduledAt: string;
   recurrence?: 'daily' | 'weekly' | 'monthly';
   status: 'queued' | 'processing' | 'completed' | 'cancelled';
   approvalStatus: 'pending' | 'approved';
   autoUnsendPrevious?: boolean;
+  autoUnsendAfterMinutes?: number;
+  autoUnsendAt?: string;
+  successCount?: number;
+  failedCount?: number;
+  errorMessage?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  // Rotation-specific fields
+  isRotation?: boolean;
+  rotationCaptions?: string[];
+  rotationDurationHours?: number;
+  rotationEndAt?: string;
 }
 
 export interface ActiveMessage {

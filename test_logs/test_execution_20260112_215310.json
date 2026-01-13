@@ -1,0 +1,56 @@
+{
+  "timestamp": "2026-01-12T13:53:01.106180+00:00",
+  "account_id": "248797134",
+  "test_user_id": "u528621767",
+  "message_content": "Hey babe! Just checking in... miss you",
+  "media_ids": [
+    "4178022235"
+  ],
+  "price": 0.0,
+  "auto_unsend_previous": true,
+  "auto_unsend_after_minutes": 1,
+  "dry_run": false,
+  "steps": [
+    {
+      "action": "parsed_user_id",
+      "user_id": 528621767
+    },
+    {
+      "action": "authenticated",
+      "username": "Ayumi"
+    },
+    {
+      "action": "checking_active_message"
+    },
+    {
+      "action": "no_active_message_found"
+    },
+    {
+      "action": "prepared_recipient",
+      "user_id": 528621767,
+      "username": "u528621767",
+      "name": "TORYOusi"
+    },
+    {
+      "action": "sending_message"
+    },
+    {
+      "action": "message_sent",
+      "success": true,
+      "message_id": "8189723318412"
+    },
+    {
+      "action": "updated_active_tracking",
+      "message_id": "8189723318412"
+    },
+    {
+      "action": "scheduled_auto_unsend",
+      "unsend_at": "2026-01-12T13:54:10.231831+00:00",
+      "minutes": 1
+    }
+  ],
+  "account_username": "Ayumi",
+  "success": true,
+  "rotation_enabled": false,
+  "total_rotation_messages": null
+}

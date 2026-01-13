@@ -25,12 +25,12 @@ class VaultManager:
     def __init__(self, api_key: Optional[str] = None):
         """Initialize Vault manager.
 
-        :param api_key: Vault API key. If not provided, reads from VAULT_API_KEY env var.
+        :param api_key: Vault API key. If not provided, reads from VAULT_API env var.
         :raises ValueError: If no API key is provided or found in environment.
         """
-        self.api_key = api_key or os.getenv("VAULT_API_KEY")
+        self.api_key = api_key or os.getenv("VAULT_API")
         if not self.api_key:
-            raise ValueError("VAULT_API_KEY must be provided or set in environment variables")
+            raise ValueError("VAULT_API must be provided or set in environment variables")
 
         self.headers = {
             "X-API-Key": self.api_key,

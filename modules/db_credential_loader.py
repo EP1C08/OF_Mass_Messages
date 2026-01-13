@@ -210,3 +210,41 @@ async def load_credentials_from_db(
             return await loader.load_all_active_credentials()
     finally:
         await loader.close()
+
+
+async def list_models_from_db(
+    database_url: Optional[str] = None,
+    encryption_key: Optional[str] = None,
+) -> List[dict]:
+    """List all models from database WITHOUT authenticating them.
+
+    This is a fast operation that just reads the database.
+    Use this for listing available models in UI dropdowns.
+
+    :param database_url: PostgreSQL connection string. If not provided, reads from DATABASE_URL env var.
+    :param encryption_key: Fernet encryption key. If not provided, reads from ENCRYPTION_KEY env var.
+    :return: List of model info dicts with model_id, username, and auth_status.
+    """
+    loader = DatabaseCredentialLoader(database_url, encryption_key)
+
+    try:
+        async with loader.async_session() as session:
+            stmt = select(CreatorCredential).where(
+                CreatorCredential.status == 'active'
+            ).order_by(CreatorCredential.account_name)
+
+            result = await session.execute(stmt)
+            credentials = result.scalars().all()
+
+            models = []
+            for cred in credentials:
+                models.append({
+                    "model_id": str(cred.model_id),
+                    "username": cred.account_name,
+                    "authenticated": cred.auth_status == 'authenticated',
+                })
+
+            logger.info(f"Listed {len(models)} models from database (no auth)")
+            return models
+    finally:
+        await loader.close()

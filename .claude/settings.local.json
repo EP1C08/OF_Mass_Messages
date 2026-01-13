@@ -14,7 +14,11 @@
       "Bash(findstr:*)",
       "Bash(npx tsc:*)",
       "Bash(npx next lint:*)",
-      "Bash(npx eslint:*)"
+      "Bash(npx eslint:*)",
+      "Bash(uvicorn:*)",
+      "Bash(taskkill:*)",
+      "Bash(.venv/Scripts/python:*)",
+      "Bash(.venv\\\\Scripts\\\\python:*)"
     ]
   }
 }

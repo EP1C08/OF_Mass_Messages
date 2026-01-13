@@ -5,8 +5,11 @@
     "type": "ppv",
     "suggestedPrice": 7,
     "priceTier": "low",
-    "tags": ["confident", "direct"],
-    "useCount": 12,
+    "tags": [
+      "confident",
+      "direct"
+    ],
+    "useCount": 15,
     "lastUsedAt": "2026-01-07T14:30:00Z",
     "conversionRate": 8.5,
     "totalRevenue": 714,
@@ -18,7 +21,10 @@
     "type": "ppv",
     "suggestedPrice": 15,
     "priceTier": "medium",
-    "tags": ["personal", "exclusive"],
+    "tags": [
+      "personal",
+      "exclusive"
+    ],
     "useCount": 8,
     "lastUsedAt": "2026-01-04T10:15:00Z",
     "conversionRate": 12.3,
@@ -31,7 +37,10 @@
     "type": "ppv",
     "suggestedPrice": 25,
     "priceTier": "high",
-    "tags": ["request", "personal"],
+    "tags": [
+      "request",
+      "personal"
+    ],
     "useCount": 5,
     "lastUsedAt": "2026-01-02T18:45:00Z",
     "conversionRate": 15.8,
@@ -44,7 +53,10 @@
     "type": "ppv",
     "suggestedPrice": 20,
     "priceTier": "medium",
-    "tags": ["confident", "direct"],
+    "tags": [
+      "confident",
+      "direct"
+    ],
     "useCount": 13,
     "lastUsedAt": "2026-01-08T09:00:00Z",
     "conversionRate": 9.5,
@@ -57,7 +69,10 @@
     "type": "ppv",
     "suggestedPrice": 70,
     "priceTier": "high",
-    "tags": ["confident", "flirty"],
+    "tags": [
+      "confident",
+      "flirty"
+    ],
     "useCount": 15,
     "lastUsedAt": "2026-01-09T08:20:00Z",
     "conversionRate": 9.2,
@@ -68,24 +83,33 @@
     "id": "6",
     "content": "Hey babe! Just checking in... miss you",
     "type": "free",
-    "tags": ["friendly", "casual"],
-    "useCount": 45,
+    "tags": [
+      "friendly",
+      "casual"
+    ],
+    "useCount": 51,
     "lastUsedAt": "2026-01-08T16:30:00Z"
   },
   {
     "id": "7",
     "content": "Good morning {name}! Hope you have an amazing day!",
     "type": "free",
-    "tags": ["friendly", "personal"],
-    "useCount": 38,
+    "tags": [
+      "friendly",
+      "personal"
+    ],
+    "useCount": 41,
     "lastUsedAt": "2026-01-09T07:00:00Z"
   },
   {
     "id": "8",
     "content": "Missing you today...",
     "type": "free",
-    "tags": ["flirty", "casual"],
-    "useCount": 22,
+    "tags": [
+      "flirty",
+      "casual"
+    ],
+    "useCount": 28,
     "lastUsedAt": "2026-01-06T12:00:00Z"
   }
 ]

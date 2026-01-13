@@ -15,6 +15,7 @@ class MessageResult:
     username: str
     success: bool
     error: str | None = None
+    message_id: int | None = None  # OF message ID for unsend tracking
 
 
 @dataclass
@@ -95,12 +96,12 @@ class MassMessenger:
         self,
         user_id: int,
         text: str,
-        media_ids: list[int] | None = None,
+        media_ids: list[int | str] | None = None,
         price: float = 0,
-        previews: list[int] | None = None,
+        previews: list[int | str] | None = None,
     ) -> dict[str, Any]:
         """
-        Send a message to a single user.
+        Send a message to a single user using direct API call.
 
         Args:
             user_id: Target user's ID
@@ -110,19 +111,74 @@ class MassMessenger:
             previews: Preview media IDs (required if price > 0)
 
         Returns:
-            API response dict
+            API response dict with 'id' on success or 'error' on failure
         """
-        kwargs: dict[str, Any] = {}
+        # Get target user and their requester session
+        target = await self.auth.get_user(user_id)
+        if not target:
+            return {"error": f"User {user_id} not found"}
 
-        if media_ids:
-            kwargs["mediaFiles"] = media_ids
+        target_authed_session = target.get_requester()
+        endpoint = f"https://onlyfans.com/api2/v2/chats/{user_id}/messages"
 
-        if price > 0:
-            kwargs["price"] = price
-            if previews:
-                kwargs["previews"] = previews
+        # Build payload - OnlyFans API expects mediaFiles as list of STRING IDs
+        payload: dict[str, Any] = {
+            "text": text,
+            "lockedText": False,
+            "mediaFiles": [str(mid) for mid in media_ids] if media_ids else [],
+            "price": price if price > 0 else 0,
+            "isCouplePeopleMedia": False,
+            "isForward": False
+        }
 
-        return await self.auth.send_message(user_id, text, **kwargs)
+        # Add previews if price > 0
+        if price > 0 and previews:
+            payload["previews"] = [int(p) for p in previews]
+
+        # Get required headers
+        headers = await target_authed_session.session_rules(endpoint)
+        headers["accept"] = "application/json, text/plain, */*"
+        headers["Connection"] = "keep-alive"
+
+        # Make the request
+        response = await target_authed_session.active_session.post(
+            endpoint, headers=headers, json=payload
+        )
+
+        if response.status == 200:
+            return await response.json()
+        else:
+            response_text = await response.text()
+            return {"error": {"code": response.status, "message": response_text}}
+
+    async def unsend_message(self, message_id: int) -> bool:
+        """Unsend a previously sent message.
+
+        Args:
+            message_id: The OnlyFans message ID to unsend
+
+        Returns:
+            True if successfully unsent, False otherwise
+        """
+        # Correct endpoint: DELETE /api2/v2/messages/{message_id}
+        endpoint = f"https://onlyfans.com/api2/v2/messages/{message_id}"
+        try:
+            requester = self.auth.get_requester()
+            headers = await requester.session_rules(endpoint)
+            headers["accept"] = "application/json, text/plain, */*"
+            headers["Connection"] = "keep-alive"
+
+            response = await requester.active_session.delete(endpoint, headers=headers)
+
+            if response.status == 200:
+                return True
+            else:
+                response_text = await response.text()
+                print(f"Failed to unsend message {message_id}: Status {response.status}, Response: {response_text[:200]}")
+                return False
+        except Exception as e:
+            print(f"Failed to unsend message {message_id}: {e}")
+            return False
 
     async def send_mass_message(
         self,
@@ -177,15 +233,24 @@ class MassMessenger:
                     )
 
                     if "error" in response:
-                        error_msg = response["error"].get("message", "Unknown error")
+                        error_obj = response["error"]
+                        if isinstance(error_obj, dict):
+                            error_msg = error_obj.get("message", str(error_obj))
+                        else:
+                            error_msg = str(error_obj)
                         print(f"  Error: {error_msg}")
+                        print(f"  Full response: {response}")
                         results.append(MessageResult(user_id, username, False, error_msg))
                     else:
-                        print(f"  Sent successfully")
-                        results.append(MessageResult(user_id, username, True))
+                        # Extract message ID from response for unsend tracking
+                        msg_id = response.get("id") or response.get("message_id")
+                        print(f"  Sent successfully (ID: {msg_id})")
+                        results.append(MessageResult(user_id, username, True, message_id=msg_id))
 
                 except Exception as e:
+                    import traceback
                     print(f"  Exception: {e}")
+                    print(f"  Traceback: {traceback.format_exc()}")
                     results.append(MessageResult(user_id, username, False, str(e)))
 
             if i < total:

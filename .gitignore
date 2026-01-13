@@ -72,3 +72,8 @@ Thumbs.db
 # Project specific
 *.log
 auth.json
+
+# Firebase service account (NEVER commit this)
+firebase-service-account.json
+*-service-account.json
+*.json.key

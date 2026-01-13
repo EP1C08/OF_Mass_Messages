@@ -1,0 +1,41 @@
+{
+  "timestamp": "2026-01-12T11:46:28.037029+00:00",
+  "account_id": "248797134",
+  "test_user_id": "u528621767",
+  "message_content": "Missing you today...",
+  "media_ids": [
+    "3884262080"
+  ],
+  "price": 0.0,
+  "auto_unsend_previous": true,
+  "dry_run": false,
+  "steps": [
+    {
+      "action": "parsed_user_id",
+      "user_id": 528621767
+    },
+    {
+      "action": "authenticated",
+      "username": "Ayumi"
+    },
+    {
+      "action": "checking_active_message"
+    },
+    {
+      "action": "no_active_message_found"
+    },
+    {
+      "action": "prepared_recipient",
+      "user_id": 528621767
+    },
+    {
+      "action": "sending_message"
+    },
+    {
+      "action": "message_send_failed",
+      "error": "Bad Request"
+    }
+  ],
+  "account_username": "Ayumi",
+  "error": "Bad Request"
+}
