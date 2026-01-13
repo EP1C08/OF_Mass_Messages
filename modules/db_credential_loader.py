@@ -1,9 +1,3 @@
-"""Database credential loader for OnlyFans authentication.
-
-Loads encrypted credentials from the creator_credentials database table,
-decrypts them using Fernet encryption, and converts to AuthDetails format.
-"""
-
 import logging
 import os
 from typing import List, Optional
@@ -18,15 +12,8 @@ logger = logging.getLogger(__name__)
 
 
 class DatabaseCredentialLoader:
-    """Loads creator credentials from database with decryption support."""
 
     def __init__(self, database_url: Optional[str] = None, encryption_key: Optional[str] = None):
-        """Initialize the database credential loader.
-
-        :param database_url: PostgreSQL connection string. If not provided, reads from DATABASE_URL env var.
-        :param encryption_key: Fernet encryption key. If not provided, reads from ENCRYPTION_KEY env var.
-        :raises ValueError: If required environment variables are not set.
-        """
         if database_url is None:
             database_url = os.getenv("DATABASE_URL")
 
@@ -55,11 +42,6 @@ class DatabaseCredentialLoader:
         logger.info("Database credential loader initialized")
 
     async def load_credential_by_model_id(self, model_id: str) -> Optional[dict]:
-        """Load and decrypt a single creator credential by model_id.
-
-        :param model_id: OnlyFans model/creator ID.
-        :return: Decrypted credential dictionary with auth details, or None if not found.
-        """
         async with self.async_session() as session:
             try:
                 stmt = select(CreatorCredential).where(
@@ -80,10 +62,6 @@ class DatabaseCredentialLoader:
                 return None
 
     async def load_all_active_credentials(self) -> List[dict]:
-        """Load and decrypt all active creator credentials.
-
-        :return: List of decrypted credential dictionaries.
-        """
         async with self.async_session() as session:
             try:
                 stmt = select(CreatorCredential).where(
@@ -107,10 +85,6 @@ class DatabaseCredentialLoader:
                 return []
 
     async def load_authenticated_credentials(self) -> List[dict]:
-        """Load only successfully authenticated credentials.
-
-        :return: List of decrypted credential dictionaries with auth_status='authenticated'.
-        """
         async with self.async_session() as session:
             try:
                 stmt = select(CreatorCredential).where(
@@ -135,11 +109,6 @@ class DatabaseCredentialLoader:
                 return []
 
     def _decrypt_credential(self, credential: CreatorCredential) -> Optional[dict]:
-        """Decrypt a single credential record.
-
-        :param credential: CreatorCredential SQLAlchemy model instance.
-        :return: Dictionary with decrypted auth details, or None if decryption fails.
-        """
         try:
             result = {
                 "id": int(credential.model_id),
@@ -179,7 +148,6 @@ class DatabaseCredentialLoader:
             return None
 
     async def close(self):
-        """Close database connections."""
         await self.engine.dispose()
         logger.info("Database credential loader closed")
 
@@ -190,14 +158,6 @@ async def load_credentials_from_db(
     encryption_key: Optional[str] = None,
     only_authenticated: bool = False
 ) -> List[dict]:
-    """Load credentials from database with automatic connection management.
-
-    :param model_id: Optional specific model_id to load. If None, loads all active credentials.
-    :param database_url: PostgreSQL connection string. If not provided, reads from DATABASE_URL env var.
-    :param encryption_key: Fernet encryption key. If not provided, reads from ENCRYPTION_KEY env var.
-    :param only_authenticated: If True, only load credentials with auth_status='authenticated'.
-    :return: List of decrypted credential dictionaries.
-    """
     loader = DatabaseCredentialLoader(database_url, encryption_key)
 
     try:
@@ -216,15 +176,6 @@ async def list_models_from_db(
     database_url: Optional[str] = None,
     encryption_key: Optional[str] = None,
 ) -> List[dict]:
-    """List all models from database WITHOUT authenticating them.
-
-    This is a fast operation that just reads the database.
-    Use this for listing available models in UI dropdowns.
-
-    :param database_url: PostgreSQL connection string. If not provided, reads from DATABASE_URL env var.
-    :param encryption_key: Fernet encryption key. If not provided, reads from ENCRYPTION_KEY env var.
-    :return: List of model info dicts with model_id, username, and auth_status.
-    """
     loader = DatabaseCredentialLoader(database_url, encryption_key)
 
     try:

@@ -52,18 +52,16 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Cache for authenticated sessions
 _auth_cache: Dict[str, dict] = {}
 _auth_lock = asyncio.Lock()
 
-# Parallel sending configuration
-CONCURRENT_SENDS = 10      # Number of messages to send in parallel per creator
-BATCH_DELAY = 3            # Seconds between batches
-REAUTH_INTERVAL = 100      # Re-authenticate every N fans
+CONCURRENT_SENDS = 10
+BATCH_DELAY = 3
+REAUTH_INTERVAL = 100
 
 
 class CollectionResponse(BaseModel):
-    id: Union[int, str]  # Can be int for custom lists or string like "fans", "following"
+    id: Union[int, str]
     name: str
     usersCount: int
     type: Optional[str] = None
@@ -83,15 +81,12 @@ class ModelResponse(BaseModel):
 
 
 async def get_authenticated_model(model_id: str) -> Optional[dict]:
-    """Get or create authenticated session for a model."""
     async with _auth_lock:
-        # Check cache first
         if model_id in _auth_cache:
             cached = _auth_cache[model_id]
             if cached.get("authed"):
                 return cached
 
-        # Authenticate
         logger.info(f"Authenticating model {model_id}...")
         results = await authenticate_from_db(model_id=model_id)
 
@@ -105,7 +100,6 @@ async def get_authenticated_model(model_id: str) -> Optional[dict]:
 
 
 async def close_all_sessions():
-    """Close all cached sessions."""
     async with _auth_lock:
         for model_id, data in _auth_cache.items():
             if data.get("authed"):
@@ -118,32 +112,22 @@ async def close_all_sessions():
 
 
 async def _authenticate_single_model(model_id: str, username: str) -> Optional[dict]:
-    """Authenticate a single model (used for parallel startup auth).
-
-    Args:
-        model_id: The model/creator ID
-        username: The username for logging
-
-    Returns:
-        Auth result dict or None if failed
-    """
     try:
         logger.info(f"Authenticating {username} ({model_id})...")
         results = await authenticate_from_db(model_id=model_id)
 
         if results and results[0].get("success") and results[0].get("authed"):
-            logger.info(f"✓ {username} ({model_id}) authenticated successfully")
+            logger.info(f"{username} ({model_id}) authenticated successfully")
             return results[0]
         else:
-            logger.warning(f"✗ Failed to authenticate {username} ({model_id})")
+            logger.warning(f"Failed to authenticate {username} ({model_id})")
             return None
     except Exception as e:
-        logger.error(f"✗ Error authenticating {username} ({model_id}): {e}")
+        logger.error(f"Error authenticating {username} ({model_id}): {e}")
         return None
 
 
 async def authenticate_all_accounts():
-    """Authenticate all accounts from database in parallel on startup."""
     global _auth_cache
 
     logger.info("=" * 60)
@@ -151,7 +135,6 @@ async def authenticate_all_accounts():
     logger.info("=" * 60)
 
     try:
-        # Get all models from database
         models = await list_models_from_db()
 
         if not models:
@@ -160,16 +143,13 @@ async def authenticate_all_accounts():
 
         logger.info(f"Found {len(models)} accounts to authenticate")
 
-        # Create authentication tasks for all models
         auth_tasks = [
             _authenticate_single_model(m["model_id"], m["username"])
             for m in models
         ]
 
-        # Run all authentications in parallel
         results = await asyncio.gather(*auth_tasks, return_exceptions=True)
 
-        # Store successful authentications in cache
         async with _auth_lock:
             success_count = 0
             for model, result in zip(models, results):
@@ -189,16 +169,13 @@ async def authenticate_all_accounts():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage application lifecycle."""
     logger.info("Starting Collections API server...")
 
-    # Authenticate all accounts in parallel on startup
     try:
         await authenticate_all_accounts()
     except Exception as e:
         logger.error(f"Failed to authenticate accounts on startup: {e}")
 
-    # Start the scheduler for scheduled messages
     try:
         await start_scheduler()
         logger.info("Scheduler started successfully")
@@ -209,14 +186,12 @@ async def lifespan(app: FastAPI):
 
     logger.info("Shutting down...")
 
-    # Stop the scheduler
     try:
         await stop_scheduler()
         logger.info("Scheduler stopped")
     except Exception as e:
         logger.error(f"Error stopping scheduler: {e}")
 
-    # Close all auth sessions
     await close_all_sessions()
 
 
@@ -224,10 +199,9 @@ app = FastAPI(
     title="OF Collections API",
     description="Local API for managing OnlyFans collections/lists",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
-# CORS for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -239,13 +213,11 @@ app.add_middleware(
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
     return {"status": "healthy", "cached_sessions": len(_auth_cache)}
 
 
 @app.get("/status")
 async def get_server_status():
-    """Get detailed server status including auth cache and parallel settings."""
     async with _auth_lock:
         cached_accounts = [
             {
@@ -272,11 +244,7 @@ async def get_server_status():
 
 @app.post("/accounts/refresh")
 async def refresh_all_accounts():
-    """Re-authenticate all accounts (useful if sessions expired)."""
-    # Close existing sessions
     await close_all_sessions()
-
-    # Re-authenticate all
     await authenticate_all_accounts()
 
     async with _auth_lock:
@@ -290,13 +258,7 @@ async def refresh_all_accounts():
 
 @app.get("/models", response_model=List[ModelResponse])
 async def get_models():
-    """Get all available models from database.
-
-    This is a fast operation that just reads the database
-    without authenticating any accounts.
-    """
     try:
-        # Fast listing - no authentication needed
         models = await list_models_from_db()
 
         return [

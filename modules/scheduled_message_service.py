@@ -1,4 +1,3 @@
-"""Scheduled message service - core business logic for CRUD and execution."""
 import asyncio
 import json
 import logging
@@ -27,43 +26,28 @@ from modules.mass_message import MassMessenger, Recipient
 from modules.collections import CollectionsManager
 from modules.auth import authenticate_from_db, close_session
 
-# Directory for test logs
 TEST_LOGS_DIR = Path("test_logs")
 
 logger = logging.getLogger(__name__)
 
-# Firestore collection names
 COLLECTION_SCHEDULED = "scheduled_messages"
 COLLECTION_ACTIVE = "active_messages"
 SUBCOLLECTION_RESULTS = "results"
 
 
 class ScheduledMessageService:
-    """Service for managing scheduled mass messages."""
+
+    CONCURRENT_SENDS = 10
+    BATCH_DELAY = 3.0
+    REAUTH_INTERVAL = 100
 
     def __init__(self):
         self.db: AsyncClient = get_firestore_client()
-
-    # =========================================================================
-    # CRUD Operations
-    # =========================================================================
 
     async def create_scheduled_message(
         self,
         request: CreateScheduledMessageRequest,
     ) -> ScheduledMessageResponse:
-        """Create a new scheduled message.
-
-        Args:
-            request: The create request with message details
-
-        Returns:
-            The created scheduled message response
-
-        Raises:
-            ValueError: If authentication fails
-        """
-        # Authenticate to get account info
         auth_results = await authenticate_from_db(model_id=request.account_id)
         if not auth_results or not auth_results[0].get("success"):
             raise ValueError(f"Cannot authenticate account {request.account_id}")
@@ -73,7 +57,6 @@ class ScheduledMessageService:
         auth = account_data["authed"]
 
         try:
-            # Get recipient count
             recipient_count = await self._get_recipient_count(
                 auth,
                 request.recipient_type,
@@ -82,7 +65,6 @@ class ScheduledMessageService:
         finally:
             await close_session(auth)
 
-        # Create document
         doc_id = str(uuid4())
         now = datetime.now(timezone.utc)
 
@@ -97,7 +79,7 @@ class ScheduledMessageService:
             "recipient_count": recipient_count,
             "collection_id": request.collection_id,
             "collection_name": request.collection_name,
-            "test_user_id": request.test_user_id,  # For TEST_USER recipient type
+            "test_user_id": request.test_user_id,
             "scheduled_at": request.scheduled_at,
             "status": MessageStatus.QUEUED.value,
             "approval_status": ApprovalStatus.PENDING.value,
@@ -116,14 +98,6 @@ class ScheduledMessageService:
         return self._to_response(doc_data)
 
     async def get_scheduled_message(self, message_id: str) -> Optional[ScheduledMessageResponse]:
-        """Get a single scheduled message by ID.
-
-        Args:
-            message_id: The message document ID
-
-        Returns:
-            The scheduled message or None if not found
-        """
         doc = await self.db.collection(COLLECTION_SCHEDULED).document(message_id).get()
         if not doc.exists:
             return None
@@ -138,19 +112,6 @@ class ScheduledMessageService:
         to_date: Optional[datetime] = None,
         limit: int = 100,
     ) -> List[ScheduledMessageResponse]:
-        """List scheduled messages with filters.
-
-        Args:
-            account_id: Filter by account ID
-            status: Filter by execution status
-            approval_status: Filter by approval status
-            from_date: Filter scheduled_at >= from_date
-            to_date: Filter scheduled_at <= to_date
-            limit: Maximum number of results
-
-        Returns:
-            List of scheduled messages matching filters
-        """
         query = self.db.collection(COLLECTION_SCHEDULED)
 
         if account_id:
@@ -174,18 +135,6 @@ class ScheduledMessageService:
         message_id: str,
         request: UpdateScheduledMessageRequest,
     ) -> Optional[ScheduledMessageResponse]:
-        """Update a scheduled message (only if queued and pending).
-
-        Args:
-            message_id: The message document ID
-            request: The update request with fields to change
-
-        Returns:
-            The updated message or None if not found
-
-        Raises:
-            ValueError: If message cannot be updated (not queued)
-        """
         doc_ref = self.db.collection(COLLECTION_SCHEDULED).document(message_id)
         doc = await doc_ref.get()
 
@@ -194,7 +143,6 @@ class ScheduledMessageService:
 
         data = doc.to_dict()
 
-        # Can only update queued messages
         if data["status"] != MessageStatus.QUEUED.value:
             raise ValueError("Can only update queued messages")
 
@@ -224,20 +172,6 @@ class ScheduledMessageService:
         return self._to_response(updated_doc.to_dict())
 
     async def delete_scheduled_message(self, message_id: str) -> bool:
-        """Delete a scheduled message.
-
-        Regular messages can only be deleted if queued or cancelled.
-        Rotation messages can be deleted in any non-completed state.
-
-        Args:
-            message_id: The message document ID
-
-        Returns:
-            True if deleted, False if not found
-
-        Raises:
-            ValueError: If message cannot be deleted (processing/completed for non-rotations)
-        """
         doc_ref = self.db.collection(COLLECTION_SCHEDULED).document(message_id)
         doc = await doc_ref.get()
 
@@ -247,8 +181,6 @@ class ScheduledMessageService:
         data = doc.to_dict()
         is_rotation = data.get("is_rotation", False)
 
-        # Rotations can be deleted in any state except completed
-        # Regular messages can only be deleted if queued or cancelled
         if is_rotation:
             if data["status"] == MessageStatus.COMPLETED.value:
                 raise ValueError("Cannot delete completed rotations")
@@ -256,7 +188,6 @@ class ScheduledMessageService:
             if data["status"] not in [MessageStatus.QUEUED.value, MessageStatus.CANCELLED.value]:
                 raise ValueError("Can only delete queued or cancelled messages")
 
-        # Delete subcollection results first
         results_ref = doc_ref.collection(SUBCOLLECTION_RESULTS)
         async for result_doc in results_ref.stream():
             await result_doc.reference.delete()
@@ -265,22 +196,7 @@ class ScheduledMessageService:
         logger.info(f"Deleted scheduled message {message_id}")
         return True
 
-    # =========================================================================
-    # Workflow Actions
-    # =========================================================================
-
     async def approve_message(self, message_id: str) -> Optional[ScheduledMessageResponse]:
-        """Approve a pending message.
-
-        Args:
-            message_id: The message document ID
-
-        Returns:
-            The approved message or None if not found
-
-        Raises:
-            ValueError: If message is not pending
-        """
         doc_ref = self.db.collection(COLLECTION_SCHEDULED).document(message_id)
         doc = await doc_ref.get()
 
@@ -301,17 +217,6 @@ class ScheduledMessageService:
         return self._to_response(updated_doc.to_dict())
 
     async def cancel_message(self, message_id: str) -> Optional[ScheduledMessageResponse]:
-        """Cancel a scheduled message.
-
-        Args:
-            message_id: The message document ID
-
-        Returns:
-            The cancelled message or None if not found
-
-        Raises:
-            ValueError: If message cannot be cancelled
-        """
         doc_ref = self.db.collection(COLLECTION_SCHEDULED).document(message_id)
         doc = await doc_ref.get()
 
@@ -331,24 +236,7 @@ class ScheduledMessageService:
         updated_doc = await doc_ref.get()
         return self._to_response(updated_doc.to_dict())
 
-    # =========================================================================
-    # Execution
-    # =========================================================================
-
-    # Parallel sending configuration
-    CONCURRENT_SENDS = 10      # Number of messages to send in parallel
-    BATCH_DELAY = 3.0          # Seconds between batches
-    REAUTH_INTERVAL = 100      # Re-authenticate every N fans
-
     async def execute_scheduled_message(self, message_id: str) -> None:
-        """Execute a scheduled message with parallel sending and re-auth.
-
-        Uses parallel batch sending (10 at a time) with re-authentication
-        every 100 fans for reliability.
-
-        Args:
-            message_id: The message document ID to execute
-        """
         doc_ref = self.db.collection(COLLECTION_SCHEDULED).document(message_id)
         doc = await doc_ref.get()
 
@@ -358,7 +246,6 @@ class ScheduledMessageService:
 
         data = doc.to_dict()
 
-        # Validation checks
         if data["status"] != MessageStatus.QUEUED.value:
             logger.warning(f"Message {message_id} is not queued (status: {data['status']})")
             return
@@ -367,7 +254,6 @@ class ScheduledMessageService:
             logger.warning(f"Message {message_id} is not approved")
             return
 
-        # Update status to processing
         await doc_ref.update({
             "status": MessageStatus.PROCESSING.value,
             "started_at": datetime.now(timezone.utc),
@@ -379,7 +265,6 @@ class ScheduledMessageService:
         all_message_ids: List[str] = []
 
         try:
-            # Initial authentication
             auth_results = await authenticate_from_db(model_id=account_id)
             if not auth_results or not auth_results[0].get("success"):
                 raise Exception(f"Authentication failed for account {account_id}")
@@ -389,11 +274,9 @@ class ScheduledMessageService:
             account_username = account_data.get("account_name", "Unknown")
 
             try:
-                # Handle auto-unsend if enabled
                 if data.get("auto_unsend_previous", False):
                     await self._unsend_active_message(account_id, auth)
 
-                # Get all recipients
                 recipients = await self._get_recipients(
                     auth,
                     RecipientType(data["recipient_type"]),
@@ -414,15 +297,15 @@ class ScheduledMessageService:
 
                 total_recipients = len(recipients)
                 logger.info(f"Starting parallel send to {total_recipients} recipients")
-                logger.info(f"Config: {self.CONCURRENT_SENDS} parallel, {self.BATCH_DELAY}s delay, re-auth every {self.REAUTH_INTERVAL}")
+                logger.info(
+                    f"Config: {self.CONCURRENT_SENDS} parallel, "
+                    f"{self.BATCH_DELAY}s delay, re-auth every {self.REAUTH_INTERVAL}"
+                )
 
-                # Convert media_ids to int if present
                 media_ids = None
                 if data.get("media_ids"):
                     media_ids = [int(m) for m in data["media_ids"]]
 
-                # Process in chunks of REAUTH_INTERVAL (100 fans)
-                # Re-authenticate after each chunk for session freshness
                 for chunk_start in range(0, total_recipients, self.REAUTH_INTERVAL):
                     chunk_end = min(chunk_start + self.REAUTH_INTERVAL, total_recipients)
                     chunk = recipients[chunk_start:chunk_end]
@@ -433,7 +316,6 @@ class ScheduledMessageService:
                     logger.info(f"CHUNK {chunk_num}/{total_chunks}: Recipients {chunk_start + 1}-{chunk_end}")
                     logger.info(f"=" * 50)
 
-                    # Re-authenticate for each chunk (except first which is already authed)
                     if chunk_start > 0:
                         logger.info(f"Re-authenticating for chunk {chunk_num}...")
                         await close_session(auth)
@@ -445,7 +327,6 @@ class ScheduledMessageService:
                         auth = auth_results[0]["authed"]
                         logger.info(f"Re-authenticated successfully for chunk {chunk_num}")
 
-                    # Send to this chunk using parallel batching
                     messenger = MassMessenger(auth)
                     chunk_results = await messenger.send_mass_message_parallel(
                         recipients=chunk,
@@ -456,10 +337,8 @@ class ScheduledMessageService:
                         batch_delay=self.BATCH_DELAY,
                     )
 
-                    # Collect results
                     all_results.extend(chunk_results)
 
-                    # Store results for this chunk
                     for result in chunk_results:
                         result_doc = {
                             "user_id": result.user_id,
@@ -474,7 +353,6 @@ class ScheduledMessageService:
                         if result.success and hasattr(result, 'message_id') and result.message_id:
                             all_message_ids.append(str(result.message_id))
 
-                    # Update progress in Firestore
                     current_success = sum(1 for r in all_results if r.success)
                     current_failed = len(all_results) - current_success
                     await doc_ref.update({
@@ -483,16 +361,17 @@ class ScheduledMessageService:
                         "updated_at": datetime.now(timezone.utc),
                     })
 
-                    logger.info(f"Chunk {chunk_num} complete: {sum(1 for r in chunk_results if r.success)}/{len(chunk_results)} successful")
+                    logger.info(
+                        f"Chunk {chunk_num} complete: "
+                        f"{sum(1 for r in chunk_results if r.success)}/{len(chunk_results)} successful"
+                    )
 
             finally:
                 await close_session(auth)
 
-            # Final counts
             success_count = sum(1 for r in all_results if r.success)
             failed_count = len(all_results) - success_count
 
-            # Update active message tracking
             await self._set_active_message(
                 account_id=account_id,
                 scheduled_message_id=message_id,
@@ -503,7 +382,6 @@ class ScheduledMessageService:
                 message_ids=all_message_ids,
             )
 
-            # Schedule auto-unsend if configured
             auto_unsend_minutes = data.get("auto_unsend_after_minutes")
             if auto_unsend_minutes and auto_unsend_minutes > 0:
                 from modules.scheduler import schedule_auto_unsend_job
@@ -511,7 +389,6 @@ class ScheduledMessageService:
                 await schedule_auto_unsend_job(account_id, unsend_at)
                 logger.info(f"Scheduled auto-unsend for {account_id} at {unsend_at.isoformat()}")
 
-            # Update completion status
             await doc_ref.update({
                 "status": MessageStatus.COMPLETED.value,
                 "success_count": success_count,
@@ -532,19 +409,7 @@ class ScheduledMessageService:
                 "updated_at": datetime.now(timezone.utc),
             })
 
-    # =========================================================================
-    # Active Message Management
-    # =========================================================================
-
     async def get_active_message(self, account_id: str) -> Optional[ActiveMessageResponse]:
-        """Get the currently active message for an account.
-
-        Args:
-            account_id: The OnlyFans account ID
-
-        Returns:
-            The active message or None
-        """
         doc = await self.db.collection(COLLECTION_ACTIVE).document(account_id).get()
         if not doc.exists:
             return None
@@ -567,17 +432,6 @@ class ScheduledMessageService:
         )
 
     async def unsend_active_message(self, account_id: str) -> bool:
-        """Manually unsend the active message for an account.
-
-        Args:
-            account_id: The OnlyFans account ID
-
-        Returns:
-            True if unsent, False if no active message
-
-        Raises:
-            ValueError: If authentication fails
-        """
         auth_results = await authenticate_from_db(model_id=account_id)
         if not auth_results or not auth_results[0].get("success"):
             raise ValueError(f"Cannot authenticate account {account_id}")
@@ -589,15 +443,6 @@ class ScheduledMessageService:
             await close_session(auth)
 
     async def _unsend_active_message(self, account_id: str, auth) -> bool:
-        """Internal method to unsend active message.
-
-        Args:
-            account_id: The OnlyFans account ID
-            auth: The authenticated OnlyFansAuthModel
-
-        Returns:
-            True if unsent/cleared, False if no active message
-        """
         doc_ref = self.db.collection(COLLECTION_ACTIVE).document(account_id)
         doc = await doc_ref.get()
 
@@ -607,7 +452,6 @@ class ScheduledMessageService:
         data = doc.to_dict()
         message_ids = data.get("message_ids", [])
 
-        # Unsend each message via OF API
         messenger = MassMessenger(auth)
         for msg_id in message_ids:
             try:
@@ -616,7 +460,6 @@ class ScheduledMessageService:
             except Exception as e:
                 logger.warning(f"Failed to unsend message {msg_id}: {e}")
 
-        # Clear the active message tracking
         await doc_ref.delete()
         logger.info(f"Cleared active message for account {account_id}")
         return True
@@ -631,17 +474,6 @@ class ScheduledMessageService:
         recipient_count: int,
         message_ids: List[str],
     ) -> None:
-        """Set the active message for an account.
-
-        Args:
-            account_id: The OnlyFans account ID
-            scheduled_message_id: Reference to the scheduled message
-            account_username: Account username for display
-            message_content: The message content
-            price: PPV price
-            recipient_count: Number of successful sends
-            message_ids: List of OF message IDs for unsend
-        """
         await self.db.collection(COLLECTION_ACTIVE).document(account_id).set({
             "account_id": account_id,
             "scheduled_message_id": scheduled_message_id,
@@ -653,26 +485,12 @@ class ScheduledMessageService:
             "sent_at": datetime.now(timezone.utc),
         })
 
-    # =========================================================================
-    # Results
-    # =========================================================================
-
     async def get_message_results(
         self,
         message_id: str,
         limit: int = 100,
         offset: int = 0,
     ) -> List[SendResultResponse]:
-        """Get send results for a scheduled message.
-
-        Args:
-            message_id: The scheduled message ID
-            limit: Maximum results to return
-            offset: Number of results to skip
-
-        Returns:
-            List of send results
-        """
         results_ref = (
             self.db
             .collection(COLLECTION_SCHEDULED)
@@ -706,26 +524,12 @@ class ScheduledMessageService:
 
         return results
 
-    # =========================================================================
-    # Helpers
-    # =========================================================================
-
     async def _get_recipient_count(
         self,
         auth,
         recipient_type: RecipientType,
         collection_id: Optional[str],
     ) -> int:
-        """Get estimated recipient count.
-
-        Args:
-            auth: Authenticated OnlyFansAuthModel
-            recipient_type: The type of recipients
-            collection_id: Collection ID if recipient_type is collection
-
-        Returns:
-            Number of recipients
-        """
         messenger = MassMessenger(auth)
 
         if recipient_type == RecipientType.ALL_SUBSCRIBERS:
@@ -741,7 +545,7 @@ class ScheduledMessageService:
             collection = await collections_mgr.get_collection_by_id(collection_id)
             return collection.get("usersCount", 0) if collection else 0
         elif recipient_type == RecipientType.TEST_USER:
-            return 1  # Always 1 recipient for test user
+            return 1
 
         return 0
 
@@ -752,17 +556,6 @@ class ScheduledMessageService:
         collection_id: Optional[str],
         test_user_id: Optional[str] = None,
     ) -> List[Recipient]:
-        """Get actual recipient list.
-
-        Args:
-            auth: Authenticated OnlyFansAuthModel
-            recipient_type: The type of recipients
-            collection_id: Collection ID if recipient_type is collection
-            test_user_id: User ID if recipient_type is test_user (e.g., "u528621767")
-
-        Returns:
-            List of Recipient objects
-        """
         messenger = MassMessenger(auth)
 
         if recipient_type == RecipientType.ALL_SUBSCRIBERS:
@@ -786,7 +579,6 @@ class ScheduledMessageService:
             if not test_user_id:
                 logger.warning("TEST_USER recipient type but no test_user_id provided")
                 return []
-            # Parse user ID (strip 'u' prefix if present)
             user_id_str = test_user_id
             if user_id_str.startswith('u'):
                 user_id_str = user_id_str[1:]
@@ -795,7 +587,6 @@ class ScheduledMessageService:
             except ValueError:
                 logger.error(f"Invalid test_user_id format: {test_user_id}")
                 return []
-            # Get user info for personalization
             user = await auth.get_user(user_id)
             if not user:
                 logger.error(f"Test user {user_id} not found")
@@ -811,15 +602,6 @@ class ScheduledMessageService:
         return []
 
     def _to_response(self, data: Dict[str, Any]) -> ScheduledMessageResponse:
-        """Convert Firestore document to response model.
-
-        Args:
-            data: Firestore document data
-
-        Returns:
-            ScheduledMessageResponse model
-        """
-        # Handle timestamp conversion
         def to_iso(val):
             if val is None:
                 return None
@@ -827,7 +609,6 @@ class ScheduledMessageService:
                 return val.isoformat()
             return str(val)
 
-        # Calculate auto_unsend_at if auto_unsend_after_minutes is set
         auto_unsend_at = None
         auto_unsend_minutes = data.get("auto_unsend_after_minutes")
         completed_at = data.get("completed_at")
@@ -865,26 +646,9 @@ class ScheduledMessageService:
             updated_at=to_iso(data.get("updated_at")),
         )
 
-    # =========================================================================
-    # Test Execution (for testing send/unsend flow with a single user)
-    # =========================================================================
-
     async def test_execute(self, request: TestExecuteRequest) -> TestExecuteResponse:
-        """Execute a test message to a single user.
-
-        This is for testing the send/unsend flow without sending to many users.
-        Results are logged to a JSON file.
-
-        Args:
-            request: Test execution parameters
-
-        Returns:
-            TestExecuteResponse with results
-        """
-        # Create test logs directory if needed
         TEST_LOGS_DIR.mkdir(exist_ok=True)
 
-        # Prepare log entry
         log_entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "account_id": request.account_id,
@@ -898,7 +662,6 @@ class ScheduledMessageService:
             "steps": [],
         }
 
-        # Parse user ID (strip 'u' prefix if present)
         user_id_str = request.test_user_id
         if user_id_str.startswith('u'):
             user_id_str = user_id_str[1:]
@@ -915,7 +678,6 @@ class ScheduledMessageService:
         log_entry["steps"].append({"action": "parsed_user_id", "user_id": user_id})
 
         try:
-            # Authenticate
             auth_results = await authenticate_from_db(model_id=request.account_id)
             if not auth_results or not auth_results[0].get("success"):
                 log_entry["steps"].append({"action": "auth_failed"})
@@ -934,7 +696,6 @@ class ScheduledMessageService:
             log_entry["steps"].append({"action": "authenticated", "username": account_username})
 
             try:
-                # Handle auto-unsend if enabled
                 unsent_previous = False
                 previous_message_ids = []
 
@@ -960,19 +721,21 @@ class ScheduledMessageService:
                                     log_entry["steps"].append({"action": "unsent_message", "message_id": msg_id})
                                 except Exception as e:
                                     logger.warning(f"[TEST] Failed to unsend {msg_id}: {e}")
-                                    log_entry["steps"].append({"action": "unsend_failed", "message_id": msg_id, "error": str(e)})
+                                    log_entry["steps"].append({
+                                        "action": "unsend_failed",
+                                        "message_id": msg_id,
+                                        "error": str(e),
+                                    })
 
                             unsent_previous = True
-                            # Clear active message tracking
                             await self.db.collection(COLLECTION_ACTIVE).document(request.account_id).delete()
                             log_entry["steps"].append({"action": "cleared_active_tracking"})
                         elif request.dry_run:
                             log_entry["steps"].append({"action": "dry_run_skip_unsend"})
-                            unsent_previous = True  # Would have unsent
+                            unsent_previous = True
                     else:
                         log_entry["steps"].append({"action": "no_active_message_found"})
 
-                # Get actual user info for personalization
                 user = await auth.get_user(user_id)
                 if not user:
                     log_entry["steps"].append({"action": "user_not_found", "user_id": user_id})
@@ -986,11 +749,9 @@ class ScheduledMessageService:
                         log_file=str(log_file),
                     )
 
-                # Use actual fan name from user profile
                 fan_name = user.name or user.username or "Fan"
                 fan_username = user.username or f"user_{user_id}"
 
-                # Prepare recipient with actual name
                 recipient = Recipient(
                     user_id=user_id,
                     username=fan_username,
@@ -1003,7 +764,6 @@ class ScheduledMessageService:
                     "name": fan_name,
                 })
 
-                # Send message
                 sent_message_id = None
                 auto_unsend_at_iso = None
                 if request.dry_run:
@@ -1017,7 +777,6 @@ class ScheduledMessageService:
                     log_entry["steps"].append({"action": "sending_message"})
                     messenger = MassMessenger(auth)
 
-                    # Convert media_ids to int if present
                     media_ids = None
                     if request.media_ids:
                         media_ids = [int(m) for m in request.media_ids]
@@ -1037,7 +796,6 @@ class ScheduledMessageService:
                             "message_id": sent_message_id,
                         })
 
-                        # Update active message tracking
                         await self._set_active_message(
                             account_id=request.account_id,
                             scheduled_message_id=f"test_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
@@ -1047,20 +805,20 @@ class ScheduledMessageService:
                             recipient_count=1,
                             message_ids=[sent_message_id] if sent_message_id else [],
                         )
-                        log_entry["steps"].append({"action": "updated_active_tracking", "message_id": sent_message_id})
+                        log_entry["steps"].append({
+                            "action": "updated_active_tracking",
+                            "message_id": sent_message_id,
+                        })
 
-                        # Handle rotation mode OR simple auto-unsend
                         rotation_enabled = False
                         total_rotation_messages = None
 
                         if request.enable_rotation and request.rotation_captions:
-                            # Enable rotation mode
                             from modules.scheduler import start_rotation, schedule_auto_unsend_job
 
                             captions = request.rotation_captions
                             total_rotation_messages = len(captions) * request.rotation_cycles
 
-                            # Start rotation state (will be used after first unsend)
                             await start_rotation(
                                 account_id=request.account_id,
                                 test_user_id=request.test_user_id,
@@ -1069,12 +827,10 @@ class ScheduledMessageService:
                                 total_cycles=request.rotation_cycles,
                             )
 
-                            # Mark that we've already sent the first message (current one)
-                            # Update the rotation state to reflect first message sent
                             from modules.firebase_client import get_firestore_client
                             rotation_db = get_firestore_client()
                             await rotation_db.collection("rotation_state").document(request.account_id).update({
-                                "current_index": 1 % len(captions),  # Next caption index
+                                "current_index": 1 % len(captions),
                                 "messages_sent": 1,
                                 "last_sent_at": datetime.now(timezone.utc),
                             })
@@ -1086,11 +842,15 @@ class ScheduledMessageService:
                                 "cycles": request.rotation_cycles,
                                 "total_messages": total_rotation_messages,
                             })
-                            logger.info(f"[TEST] Enabled rotation mode: {len(captions)} captions, {request.rotation_cycles} cycle(s)")
+                            logger.info(
+                                f"[TEST] Enabled rotation mode: {len(captions)} captions, "
+                                f"{request.rotation_cycles} cycle(s)"
+                            )
 
-                            # Schedule auto-unsend (which will trigger the next rotation)
                             if request.auto_unsend_after_minutes and request.auto_unsend_after_minutes > 0:
-                                unsend_at = datetime.now(timezone.utc) + timedelta(minutes=request.auto_unsend_after_minutes)
+                                unsend_at = datetime.now(timezone.utc) + timedelta(
+                                    minutes=request.auto_unsend_after_minutes
+                                )
                                 auto_unsend_at_iso = unsend_at.isoformat()
                                 await schedule_auto_unsend_job(request.account_id, unsend_at)
                                 log_entry["steps"].append({
@@ -1098,12 +858,16 @@ class ScheduledMessageService:
                                     "unsend_at": unsend_at.isoformat(),
                                     "minutes": request.auto_unsend_after_minutes,
                                 })
-                                logger.info(f"[TEST] Scheduled auto-unsend for {request.account_id} at {unsend_at.isoformat()}")
+                                logger.info(
+                                    f"[TEST] Scheduled auto-unsend for {request.account_id} "
+                                    f"at {unsend_at.isoformat()}"
+                                )
 
                         elif request.auto_unsend_after_minutes and request.auto_unsend_after_minutes > 0:
-                            # Simple auto-unsend (no rotation)
                             from modules.scheduler import schedule_auto_unsend_job
-                            unsend_at = datetime.now(timezone.utc) + timedelta(minutes=request.auto_unsend_after_minutes)
+                            unsend_at = datetime.now(timezone.utc) + timedelta(
+                                minutes=request.auto_unsend_after_minutes
+                            )
                             auto_unsend_at_iso = unsend_at.isoformat()
                             await schedule_auto_unsend_job(request.account_id, unsend_at)
                             log_entry["steps"].append({
@@ -1111,7 +875,10 @@ class ScheduledMessageService:
                                 "unsend_at": unsend_at.isoformat(),
                                 "minutes": request.auto_unsend_after_minutes,
                             })
-                            logger.info(f"[TEST] Scheduled auto-unsend for {request.account_id} at {unsend_at.isoformat()}")
+                            logger.info(
+                                f"[TEST] Scheduled auto-unsend for {request.account_id} "
+                                f"at {unsend_at.isoformat()}"
+                            )
                     else:
                         error_msg = results[0].error if results else "Unknown error"
                         log_entry["steps"].append({
@@ -1171,14 +938,6 @@ class ScheduledMessageService:
             )
 
     def _save_test_log(self, log_entry: dict) -> Path:
-        """Save test execution log to JSON file.
-
-        Args:
-            log_entry: Log data to save
-
-        Returns:
-            Path to the saved log file
-        """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = TEST_LOGS_DIR / f"test_execution_{timestamp}.json"
 

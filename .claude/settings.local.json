@@ -18,7 +18,9 @@
       "Bash(uvicorn:*)",
       "Bash(taskkill:*)",
       "Bash(.venv/Scripts/python:*)",
-      "Bash(.venv\\\\Scripts\\\\python:*)"
+      "Bash(.venv\\\\Scripts\\\\python:*)",
+      "Bash(dir /B \"c:\\\\Users\\\\RICCO0829\\\\Documents\\\\Fandom\\\\OF_Mass_Messages\\\\*.py\")",
+      "Bash(dir:*)"
     ]
   }
 }
