@@ -97,6 +97,7 @@ class ScheduledMessageService:
             "recipient_count": recipient_count,
             "collection_id": request.collection_id,
             "collection_name": request.collection_name,
+            "test_user_id": request.test_user_id,  # For TEST_USER recipient type
             "scheduled_at": request.scheduled_at,
             "status": MessageStatus.QUEUED.value,
             "approval_status": ApprovalStatus.PENDING.value,
@@ -384,6 +385,7 @@ class ScheduledMessageService:
                     auth,
                     RecipientType(data["recipient_type"]),
                     data.get("collection_id"),
+                    data.get("test_user_id"),
                 )
 
                 if not recipients:
@@ -685,6 +687,8 @@ class ScheduledMessageService:
             collections_mgr = CollectionsManager(auth)
             collection = await collections_mgr.get_collection_by_id(collection_id)
             return collection.get("usersCount", 0) if collection else 0
+        elif recipient_type == RecipientType.TEST_USER:
+            return 1  # Always 1 recipient for test user
 
         return 0
 
@@ -693,6 +697,7 @@ class ScheduledMessageService:
         auth,
         recipient_type: RecipientType,
         collection_id: Optional[str],
+        test_user_id: Optional[str] = None,
     ) -> List[Recipient]:
         """Get actual recipient list.
 
@@ -700,6 +705,7 @@ class ScheduledMessageService:
             auth: Authenticated OnlyFansAuthModel
             recipient_type: The type of recipients
             collection_id: Collection ID if recipient_type is collection
+            test_user_id: User ID if recipient_type is test_user (e.g., "u528621767")
 
         Returns:
             List of Recipient objects
@@ -722,6 +728,31 @@ class ScheduledMessageService:
                     name=u.get("name") or u.get("username", "Unknown"),
                 )
                 for u in users
+            ]
+        elif recipient_type == RecipientType.TEST_USER:
+            if not test_user_id:
+                logger.warning("TEST_USER recipient type but no test_user_id provided")
+                return []
+            # Parse user ID (strip 'u' prefix if present)
+            user_id_str = test_user_id
+            if user_id_str.startswith('u'):
+                user_id_str = user_id_str[1:]
+            try:
+                user_id = int(user_id_str)
+            except ValueError:
+                logger.error(f"Invalid test_user_id format: {test_user_id}")
+                return []
+            # Get user info for personalization
+            user = await auth.get_user(user_id)
+            if not user:
+                logger.error(f"Test user {user_id} not found")
+                return []
+            return [
+                Recipient(
+                    user_id=user_id,
+                    username=user.username or f"user_{user_id}",
+                    name=user.name or user.username or "Fan",
+                )
             ]
 
         return []
