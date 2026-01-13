@@ -1,11 +1,14 @@
 """Mass messaging functionality for OnlyFans."""
 import asyncio
+import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
     from ultima_scraper_api.apis.onlyfans.classes.auth_model import OnlyFansAuthModel
     from ultima_scraper_api.apis.onlyfans.classes.chat_model import ChatModel
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -276,3 +279,156 @@ class MassMessenger:
             for r in results:
                 if not r.success:
                     print(f"  - {r.username}: {r.error}")
+
+    async def _send_single_message_worker(
+        self,
+        recipient: Recipient,
+        message_template: str,
+        media_ids: list[int] | None,
+        price: float,
+        previews: list[int] | None,
+        semaphore: asyncio.Semaphore,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        current_idx: int = 0,
+        total: int = 0,
+    ) -> MessageResult:
+        """Worker function to send a single message with semaphore control.
+
+        Args:
+            recipient: The recipient to send to
+            message_template: Message template with placeholders
+            media_ids: Optional media IDs
+            price: PPV price
+            previews: Preview media IDs
+            semaphore: Semaphore for concurrency control
+            progress_callback: Optional callback for progress updates
+            current_idx: Current index for progress reporting
+            total: Total recipients for progress reporting
+
+        Returns:
+            MessageResult for this recipient
+        """
+        async with semaphore:
+            username = recipient.username
+            name = recipient.name
+            user_id = recipient.user_id
+
+            personalized = self.personalize_message(message_template, username, name)
+
+            try:
+                response = await self.send_message(
+                    user_id=user_id,
+                    text=personalized,
+                    media_ids=media_ids,
+                    price=price,
+                    previews=previews,
+                )
+
+                if "error" in response:
+                    error_obj = response["error"]
+                    if isinstance(error_obj, dict):
+                        error_msg = error_obj.get("message", str(error_obj))
+                    else:
+                        error_msg = str(error_obj)
+                    logger.warning(f"[{current_idx}/{total}] {username}: Error - {error_msg[:100]}")
+                    return MessageResult(user_id, username, False, error_msg)
+                else:
+                    msg_id = response.get("id") or response.get("message_id")
+                    logger.info(f"[{current_idx}/{total}] {username}: Sent (ID: {msg_id})")
+                    if progress_callback:
+                        progress_callback(current_idx, total, username)
+                    return MessageResult(user_id, username, True, message_id=msg_id)
+
+            except Exception as e:
+                logger.error(f"[{current_idx}/{total}] {username}: Exception - {e}")
+                return MessageResult(user_id, username, False, str(e))
+
+    async def send_mass_message_parallel(
+        self,
+        recipients: list[Recipient],
+        message_template: str,
+        media_ids: list[int] | None = None,
+        price: float = 0,
+        previews: list[int] | None = None,
+        concurrent_sends: int = 10,
+        batch_delay: float = 3.0,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ) -> list[MessageResult]:
+        """
+        Send messages to multiple recipients in parallel batches.
+
+        Uses asyncio.Semaphore to limit concurrent sends and adds delay between batches.
+
+        Args:
+            recipients: List of recipients to message
+            message_template: Message with optional {name}/{username} placeholders
+            media_ids: Optional media to attach
+            price: PPV price
+            previews: Preview media IDs
+            concurrent_sends: Number of messages to send in parallel (default: 10)
+            batch_delay: Seconds to wait between batches (default: 3.0)
+            progress_callback: Optional callback(current, total, username) for progress
+
+        Returns:
+            List of MessageResult for each recipient
+        """
+        total = len(recipients)
+        if total == 0:
+            return []
+
+        logger.info(f"Starting parallel send to {total} recipients")
+        logger.info(f"Concurrent sends: {concurrent_sends}, Batch delay: {batch_delay}s")
+
+        # Create semaphore for concurrency control
+        semaphore = asyncio.Semaphore(concurrent_sends)
+
+        # Process in batches for the delay
+        results: list[MessageResult] = []
+        batch_size = concurrent_sends
+
+        for batch_start in range(0, total, batch_size):
+            batch_end = min(batch_start + batch_size, total)
+            batch = recipients[batch_start:batch_end]
+            batch_num = (batch_start // batch_size) + 1
+            total_batches = (total + batch_size - 1) // batch_size
+
+            logger.info(f"Batch {batch_num}/{total_batches}: Sending to {len(batch)} recipients...")
+
+            # Create tasks for this batch
+            tasks = [
+                self._send_single_message_worker(
+                    recipient=r,
+                    message_template=message_template,
+                    media_ids=media_ids,
+                    price=price,
+                    previews=previews,
+                    semaphore=semaphore,
+                    progress_callback=progress_callback,
+                    current_idx=batch_start + i + 1,
+                    total=total,
+                )
+                for i, r in enumerate(batch)
+            ]
+
+            # Run batch in parallel
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Collect results
+            for result in batch_results:
+                if isinstance(result, Exception):
+                    logger.error(f"Task exception: {result}")
+                    # Create a failed result for exceptions
+                    results.append(MessageResult(0, "unknown", False, str(result)))
+                else:
+                    results.append(result)
+
+            # Delay between batches (except for last batch)
+            if batch_end < total:
+                logger.debug(f"Waiting {batch_delay}s before next batch...")
+                await asyncio.sleep(batch_delay)
+
+        # Log summary
+        success_count = sum(1 for r in results if r.success)
+        logger.info(f"Parallel send complete: {success_count}/{total} successful")
+
+        return results

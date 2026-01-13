@@ -56,6 +56,11 @@ logger = logging.getLogger(__name__)
 _auth_cache: Dict[str, dict] = {}
 _auth_lock = asyncio.Lock()
 
+# Parallel sending configuration
+CONCURRENT_SENDS = 10      # Number of messages to send in parallel per creator
+BATCH_DELAY = 3            # Seconds between batches
+REAUTH_INTERVAL = 100      # Re-authenticate every N fans
+
 
 class CollectionResponse(BaseModel):
     id: Union[int, str]  # Can be int for custom lists or string like "fans", "following"
@@ -112,10 +117,86 @@ async def close_all_sessions():
         _auth_cache.clear()
 
 
+async def _authenticate_single_model(model_id: str, username: str) -> Optional[dict]:
+    """Authenticate a single model (used for parallel startup auth).
+
+    Args:
+        model_id: The model/creator ID
+        username: The username for logging
+
+    Returns:
+        Auth result dict or None if failed
+    """
+    try:
+        logger.info(f"Authenticating {username} ({model_id})...")
+        results = await authenticate_from_db(model_id=model_id)
+
+        if results and results[0].get("success") and results[0].get("authed"):
+            logger.info(f"✓ {username} ({model_id}) authenticated successfully")
+            return results[0]
+        else:
+            logger.warning(f"✗ Failed to authenticate {username} ({model_id})")
+            return None
+    except Exception as e:
+        logger.error(f"✗ Error authenticating {username} ({model_id}): {e}")
+        return None
+
+
+async def authenticate_all_accounts():
+    """Authenticate all accounts from database in parallel on startup."""
+    global _auth_cache
+
+    logger.info("=" * 60)
+    logger.info("AUTHENTICATING ALL ACCOUNTS IN PARALLEL")
+    logger.info("=" * 60)
+
+    try:
+        # Get all models from database
+        models = await list_models_from_db()
+
+        if not models:
+            logger.warning("No models found in database")
+            return
+
+        logger.info(f"Found {len(models)} accounts to authenticate")
+
+        # Create authentication tasks for all models
+        auth_tasks = [
+            _authenticate_single_model(m["model_id"], m["username"])
+            for m in models
+        ]
+
+        # Run all authentications in parallel
+        results = await asyncio.gather(*auth_tasks, return_exceptions=True)
+
+        # Store successful authentications in cache
+        async with _auth_lock:
+            success_count = 0
+            for model, result in zip(models, results):
+                if isinstance(result, Exception):
+                    logger.error(f"Exception for {model['username']}: {result}")
+                elif result is not None:
+                    _auth_cache[model["model_id"]] = result
+                    success_count += 1
+
+        logger.info("=" * 60)
+        logger.info(f"AUTHENTICATION COMPLETE: {success_count}/{len(models)} accounts")
+        logger.info("=" * 60)
+
+    except Exception as e:
+        logger.error(f"Error during parallel authentication: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
     logger.info("Starting Collections API server...")
+
+    # Authenticate all accounts in parallel on startup
+    try:
+        await authenticate_all_accounts()
+    except Exception as e:
+        logger.error(f"Failed to authenticate accounts on startup: {e}")
 
     # Start the scheduler for scheduled messages
     try:
@@ -160,6 +241,51 @@ app.add_middleware(
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "cached_sessions": len(_auth_cache)}
+
+
+@app.get("/status")
+async def get_server_status():
+    """Get detailed server status including auth cache and parallel settings."""
+    async with _auth_lock:
+        cached_accounts = [
+            {
+                "model_id": model_id,
+                "username": data.get("account_name", "Unknown"),
+                "authenticated": bool(data.get("authed")),
+            }
+            for model_id, data in _auth_cache.items()
+        ]
+
+    return {
+        "status": "running",
+        "parallel_settings": {
+            "concurrent_sends": CONCURRENT_SENDS,
+            "batch_delay_seconds": BATCH_DELAY,
+            "reauth_interval_fans": REAUTH_INTERVAL,
+        },
+        "cached_sessions": {
+            "count": len(cached_accounts),
+            "accounts": cached_accounts,
+        },
+    }
+
+
+@app.post("/accounts/refresh")
+async def refresh_all_accounts():
+    """Re-authenticate all accounts (useful if sessions expired)."""
+    # Close existing sessions
+    await close_all_sessions()
+
+    # Re-authenticate all
+    await authenticate_all_accounts()
+
+    async with _auth_lock:
+        success_count = len(_auth_cache)
+
+    return {
+        "message": "Accounts refreshed",
+        "authenticated_count": success_count,
+    }
 
 
 @app.get("/models", response_model=List[ModelResponse])

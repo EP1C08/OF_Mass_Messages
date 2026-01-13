@@ -335,8 +335,16 @@ class ScheduledMessageService:
     # Execution
     # =========================================================================
 
+    # Parallel sending configuration
+    CONCURRENT_SENDS = 10      # Number of messages to send in parallel
+    BATCH_DELAY = 3.0          # Seconds between batches
+    REAUTH_INTERVAL = 100      # Re-authenticate every N fans
+
     async def execute_scheduled_message(self, message_id: str) -> None:
-        """Execute a scheduled message (called by scheduler).
+        """Execute a scheduled message with parallel sending and re-auth.
+
+        Uses parallel batch sending (10 at a time) with re-authentication
+        every 100 fans for reliability.
 
         Args:
             message_id: The message document ID to execute
@@ -366,21 +374,26 @@ class ScheduledMessageService:
             "updated_at": datetime.now(timezone.utc),
         })
 
+        account_id = data["account_id"]
+        all_results: List[Any] = []
+        all_message_ids: List[str] = []
+
         try:
-            # Authenticate
-            auth_results = await authenticate_from_db(model_id=data["account_id"])
+            # Initial authentication
+            auth_results = await authenticate_from_db(model_id=account_id)
             if not auth_results or not auth_results[0].get("success"):
-                raise Exception(f"Authentication failed for account {data['account_id']}")
+                raise Exception(f"Authentication failed for account {account_id}")
 
             account_data = auth_results[0]
             auth = account_data["authed"]
+            account_username = account_data.get("account_name", "Unknown")
 
             try:
                 # Handle auto-unsend if enabled
                 if data.get("auto_unsend_previous", False):
-                    await self._unsend_active_message(data["account_id"], auth)
+                    await self._unsend_active_message(account_id, auth)
 
-                # Get recipients
+                # Get all recipients
                 recipients = await self._get_recipients(
                     auth,
                     RecipientType(data["recipient_type"]),
@@ -399,77 +412,117 @@ class ScheduledMessageService:
                     })
                     return
 
-                # Send messages
-                messenger = MassMessenger(auth)
+                total_recipients = len(recipients)
+                logger.info(f"Starting parallel send to {total_recipients} recipients")
+                logger.info(f"Config: {self.CONCURRENT_SENDS} parallel, {self.BATCH_DELAY}s delay, re-auth every {self.REAUTH_INTERVAL}")
 
                 # Convert media_ids to int if present
                 media_ids = None
                 if data.get("media_ids"):
                     media_ids = [int(m) for m in data["media_ids"]]
 
-                results = await messenger.send_mass_message(
-                    recipients=recipients,
-                    message_template=data["message_content"],
-                    media_ids=media_ids,
-                    price=data.get("price", 0),
-                )
+                # Process in chunks of REAUTH_INTERVAL (100 fans)
+                # Re-authenticate after each chunk for session freshness
+                for chunk_start in range(0, total_recipients, self.REAUTH_INTERVAL):
+                    chunk_end = min(chunk_start + self.REAUTH_INTERVAL, total_recipients)
+                    chunk = recipients[chunk_start:chunk_end]
+                    chunk_num = (chunk_start // self.REAUTH_INTERVAL) + 1
+                    total_chunks = (total_recipients + self.REAUTH_INTERVAL - 1) // self.REAUTH_INTERVAL
 
-                # Store results
-                success_count = 0
-                failed_count = 0
-                message_ids = []
+                    logger.info(f"=" * 50)
+                    logger.info(f"CHUNK {chunk_num}/{total_chunks}: Recipients {chunk_start + 1}-{chunk_end}")
+                    logger.info(f"=" * 50)
 
-                for result in results:
-                    result_doc = {
-                        "user_id": result.user_id,
-                        "username": result.username,
-                        "success": result.success,
-                        "error_message": result.error,
-                        "message_id": getattr(result, 'message_id', None),
-                        "sent_at": datetime.now(timezone.utc),
-                    }
+                    # Re-authenticate for each chunk (except first which is already authed)
+                    if chunk_start > 0:
+                        logger.info(f"Re-authenticating for chunk {chunk_num}...")
+                        await close_session(auth)
 
-                    await doc_ref.collection(SUBCOLLECTION_RESULTS).add(result_doc)
+                        auth_results = await authenticate_from_db(model_id=account_id)
+                        if not auth_results or not auth_results[0].get("success"):
+                            raise Exception(f"Re-authentication failed at chunk {chunk_num}")
 
-                    if result.success:
-                        success_count += 1
-                        if hasattr(result, 'message_id') and result.message_id:
-                            message_ids.append(str(result.message_id))
-                    else:
-                        failed_count += 1
+                        auth = auth_results[0]["authed"]
+                        logger.info(f"Re-authenticated successfully for chunk {chunk_num}")
 
-                # Update active message tracking
-                await self._set_active_message(
-                    account_id=data["account_id"],
-                    scheduled_message_id=message_id,
-                    account_username=data["account_username"],
-                    message_content=data["message_content"],
-                    price=data.get("price", 0),
-                    recipient_count=success_count,
-                    message_ids=message_ids,
-                )
+                    # Send to this chunk using parallel batching
+                    messenger = MassMessenger(auth)
+                    chunk_results = await messenger.send_mass_message_parallel(
+                        recipients=chunk,
+                        message_template=data["message_content"],
+                        media_ids=media_ids,
+                        price=data.get("price", 0),
+                        concurrent_sends=self.CONCURRENT_SENDS,
+                        batch_delay=self.BATCH_DELAY,
+                    )
 
-                # Schedule auto-unsend if configured
-                auto_unsend_minutes = data.get("auto_unsend_after_minutes")
-                if auto_unsend_minutes and auto_unsend_minutes > 0:
-                    from modules.scheduler import schedule_auto_unsend_job
-                    unsend_at = datetime.now(timezone.utc) + timedelta(minutes=auto_unsend_minutes)
-                    await schedule_auto_unsend_job(data["account_id"], unsend_at)
-                    logger.info(f"Scheduled auto-unsend for {data['account_id']} at {unsend_at.isoformat()}")
+                    # Collect results
+                    all_results.extend(chunk_results)
 
-                # Update completion status
-                await doc_ref.update({
-                    "status": MessageStatus.COMPLETED.value,
-                    "success_count": success_count,
-                    "failed_count": failed_count,
-                    "completed_at": datetime.now(timezone.utc),
-                    "updated_at": datetime.now(timezone.utc),
-                })
+                    # Store results for this chunk
+                    for result in chunk_results:
+                        result_doc = {
+                            "user_id": result.user_id,
+                            "username": result.username,
+                            "success": result.success,
+                            "error_message": result.error,
+                            "message_id": getattr(result, 'message_id', None),
+                            "sent_at": datetime.now(timezone.utc),
+                        }
+                        await doc_ref.collection(SUBCOLLECTION_RESULTS).add(result_doc)
 
-                logger.info(f"Completed message {message_id}: {success_count} success, {failed_count} failed")
+                        if result.success and hasattr(result, 'message_id') and result.message_id:
+                            all_message_ids.append(str(result.message_id))
+
+                    # Update progress in Firestore
+                    current_success = sum(1 for r in all_results if r.success)
+                    current_failed = len(all_results) - current_success
+                    await doc_ref.update({
+                        "success_count": current_success,
+                        "failed_count": current_failed,
+                        "updated_at": datetime.now(timezone.utc),
+                    })
+
+                    logger.info(f"Chunk {chunk_num} complete: {sum(1 for r in chunk_results if r.success)}/{len(chunk_results)} successful")
 
             finally:
                 await close_session(auth)
+
+            # Final counts
+            success_count = sum(1 for r in all_results if r.success)
+            failed_count = len(all_results) - success_count
+
+            # Update active message tracking
+            await self._set_active_message(
+                account_id=account_id,
+                scheduled_message_id=message_id,
+                account_username=account_username,
+                message_content=data["message_content"],
+                price=data.get("price", 0),
+                recipient_count=success_count,
+                message_ids=all_message_ids,
+            )
+
+            # Schedule auto-unsend if configured
+            auto_unsend_minutes = data.get("auto_unsend_after_minutes")
+            if auto_unsend_minutes and auto_unsend_minutes > 0:
+                from modules.scheduler import schedule_auto_unsend_job
+                unsend_at = datetime.now(timezone.utc) + timedelta(minutes=auto_unsend_minutes)
+                await schedule_auto_unsend_job(account_id, unsend_at)
+                logger.info(f"Scheduled auto-unsend for {account_id} at {unsend_at.isoformat()}")
+
+            # Update completion status
+            await doc_ref.update({
+                "status": MessageStatus.COMPLETED.value,
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "completed_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+            })
+
+            logger.info(f"=" * 50)
+            logger.info(f"COMPLETED message {message_id}: {success_count}/{len(all_results)} successful")
+            logger.info(f"=" * 50)
 
         except Exception as e:
             logger.error(f"Failed to execute message {message_id}: {e}")
