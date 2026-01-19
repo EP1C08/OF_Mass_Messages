@@ -896,12 +896,13 @@ async def delete_scheduled_message(message_id: str):
 
         data = doc.to_dict()
         is_rotation = data.get("is_rotation", False)
+        is_bulk_rotation = data.get("is_bulk_rotation", False)
         account_id = data.get("account_id")
         status = data.get("status")
 
         # Rotations can be deleted in any state (including completed for cleanup)
         # Regular messages cannot be deleted while processing
-        if not is_rotation:
+        if not is_rotation and not is_bulk_rotation:
             if status == "processing":
                 raise HTTPException(status_code=400, detail="Cannot delete messages that are currently processing")
 
@@ -912,10 +913,38 @@ async def delete_scheduled_message(message_id: str):
         # Cancel the scheduled job
         await cancel_message_job(message_id)
 
-        # If it's a rotation, also clean up the rotation state and cancel rotation jobs
-        if is_rotation and account_id:
+        # Handle BULK rotation cleanup
+        if is_bulk_rotation:
+            group_id = data.get("bulk_group_id")
+            if group_id:
+                scheduler = get_scheduler()
+
+                group_doc = await db.collection("bulk_rotation_groups").document(group_id).get()
+                if group_doc.exists:
+                    group_data = group_doc.to_dict()
+                    model_ids = group_data.get("model_ids", [])
+
+                    for model_id in model_ids:
+                        await db.collection("rotation_state").document(model_id).delete()
+                        logger.info(f"Deleted rotation_state for model {model_id}")
+
+                        for job_prefix in ["model_start_", "model_next_"]:
+                            job_id = f"{job_prefix}{group_id}_{model_id}"
+                            if scheduler.get_job(job_id):
+                                scheduler.remove_job(job_id)
+                                logger.info(f"Cancelled job: {job_id}")
+
+                    await db.collection("bulk_rotation_groups").document(group_id).delete()
+                    logger.info(f"Deleted bulk_rotation_groups document: {group_id}")
+
+                bulk_start_job_id = f"bulk_rotation_start_{group_id}"
+                if scheduler.get_job(bulk_start_job_id):
+                    scheduler.remove_job(bulk_start_job_id)
+                    logger.info(f"Cancelled bulk rotation start job: {bulk_start_job_id}")
+
+        # Handle single model rotation cleanup
+        elif is_rotation and account_id:
             await stop_rotation(account_id)
-            # Cancel rotation start job if scheduled
             scheduler = get_scheduler()
             rotation_start_job_id = f"rotation_start_{account_id}"
             if scheduler.get_job(rotation_start_job_id):
@@ -1540,7 +1569,7 @@ class StartBulkRotationRequest(BaseModel):
     collection_id: Optional[str] = None
     collection_name: Optional[str] = None
     test_user_id: Optional[str] = None
-    vault_folder_name: str = "GIFs"
+    vault_folder_name: str = "GIFS"
     captions: List[str]
     gif_count: int
     auto_unsend_after_minutes: int = 60

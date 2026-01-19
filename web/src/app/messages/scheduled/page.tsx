@@ -160,8 +160,9 @@ export default function ScheduledMessagesPage() {
     // Bulk rotation settings (send to ALL models at once)
     enableBulkRotation: false,
     bulkSelectedModelIds: [] as string[],
-    bulkVaultFolderName: "GIFs",
+    bulkVaultFolderName: "GIFS",
     bulkGifCount: 5,
+    bulkStaggerMinutes: 15,
     bulkEndDate: "",
     bulkEndTime: "23:59",
   });
@@ -202,8 +203,9 @@ export default function ScheduledMessagesPage() {
       rotationDurationHours: 24,
       enableBulkRotation: false,
       bulkSelectedModelIds: [],
-      bulkVaultFolderName: "GIFs",
+      bulkVaultFolderName: "GIFS",
       bulkGifCount: 5,
+      bulkStaggerMinutes: 15,
       bulkEndDate: "",
       bulkEndTime: "23:59",
     });
@@ -345,10 +347,11 @@ export default function ScheduledMessagesPage() {
             collection_id: formData.recipientType === "collection" ? formData.collectionId : null,
             collection_name: formData.recipientType === "collection" ? formData.collectionName : null,
             test_user_id: formData.recipientType === "test_user" ? (formData.testUserId || "u528621767") : null,
-            vault_folder_name: formData.bulkVaultFolderName || "GIFs",
+            vault_folder_name: formData.bulkVaultFolderName || "GIFS",
             captions: formData.rotationCaptions.filter(c => c.trim() !== ''),
             gif_count: formData.bulkGifCount || 5,
             auto_unsend_after_minutes: formData.autoUnsendAfterMinutes || 1,
+            stagger_minutes: formData.bulkStaggerMinutes || 0,
             total_cycles: 1,  // Run through all GIFs once
             start_at: scheduledStartAt,
           }),
@@ -1305,14 +1308,18 @@ export default function ScheduledMessagesPage() {
                   <Label>Auto-unsend after (minutes)</Label>
                   <div className="flex items-center gap-2">
                     <Input
-                      type="number"
-                      min="1"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                       className="w-24"
                       value={formData.autoUnsendAfterMinutes || ""}
-                      onChange={(e) => setFormData(prev => ({
-                        ...prev,
-                        autoUnsendAfterMinutes: e.target.value ? parseInt(e.target.value) : 1
-                      }))}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/[^0-9]/g, '');
+                        setFormData(prev => ({
+                          ...prev,
+                          autoUnsendAfterMinutes: val === "" ? 0 : parseInt(val)
+                        }));
+                      }}
                     />
                     <span className="text-sm text-muted-foreground">minutes</span>
                   </div>
@@ -1411,24 +1418,49 @@ export default function ScheduledMessagesPage() {
                           <div className="grid gap-2">
                             <Label>Number of GIFs to Use</Label>
                             <Input
-                              type="number"
-                              min="1"
-                              max="100"
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
                               className="w-32"
-                              value={formData.bulkGifCount}
-                              onChange={(e) => setFormData(prev => ({
-                                ...prev,
-                                bulkGifCount: e.target.value ? parseInt(e.target.value) : 5
-                              }))}
+                              value={formData.bulkGifCount || ""}
+                              onChange={(e) => {
+                                const val = e.target.value.replace(/[^0-9]/g, '');
+                                setFormData(prev => ({
+                                  ...prev,
+                                  bulkGifCount: val === "" ? 0 : parseInt(val)
+                                }));
+                              }}
                             />
                             <p className="text-xs text-muted-foreground">
                               Will randomly select this many GIFs from each model&apos;s folder
                             </p>
                           </div>
 
+                          {/* Stagger Timing */}
+                          <div className="grid gap-2">
+                            <Label>Stagger Timing (minutes between models)</Label>
+                            <Input
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              className="w-32"
+                              value={formData.bulkStaggerMinutes || ""}
+                              onChange={(e) => {
+                                const val = e.target.value.replace(/[^0-9]/g, '');
+                                setFormData(prev => ({
+                                  ...prev,
+                                  bulkStaggerMinutes: val === "" ? 0 : parseInt(val)
+                                }));
+                              }}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              Minutes between each model&apos;s start (0 = all start together, 15 = recommended)
+                            </p>
+                          </div>
+
                           <div className="p-3 rounded-lg bg-purple-500/10 border border-purple-500/30">
                             <p className="text-xs text-purple-700">
-                              <strong>Bulk Rotation:</strong> All {formData.bulkSelectedModelIds.length} models will send simultaneously.
+                              <strong>Bulk Rotation:</strong> {formData.bulkSelectedModelIds.length} models will start {formData.bulkStaggerMinutes > 0 ? `${formData.bulkStaggerMinutes} min apart` : 'simultaneously'}.
                               {formData.bulkGifCount} random GIFs will be pre-selected from &quot;{formData.bulkVaultFolderName}&quot; folder.
                               Each GIF rotates every {formData.autoUnsendAfterMinutes || 1} minute(s).
                               <strong> Rotation stops after all {formData.bulkGifCount} GIFs have been sent.</strong>
@@ -1441,15 +1473,18 @@ export default function ScheduledMessagesPage() {
                           <div className="grid gap-2">
                             <Label>Run Duration (hours)</Label>
                             <Input
-                              type="number"
-                              min="1"
-                              max="168"
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
                               className="w-32"
                               value={formData.rotationDurationHours || ""}
-                              onChange={(e) => setFormData(prev => ({
-                                ...prev,
-                                rotationDurationHours: e.target.value ? parseInt(e.target.value) : 24
-                              }))}
+                              onChange={(e) => {
+                                const val = e.target.value.replace(/[^0-9]/g, '');
+                                setFormData(prev => ({
+                                  ...prev,
+                                  rotationDurationHours: val === "" ? 0 : parseInt(val)
+                                }));
+                              }}
                             />
                             <p className="text-xs text-muted-foreground">
                               How long to run the rotation (1-168 hours / up to 7 days)

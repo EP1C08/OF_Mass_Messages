@@ -928,7 +928,7 @@ async def start_bulk_rotation(
     model_ids: List[str],
     captions: List[str],
     gif_count: int,
-    vault_folder_name: str = "GIFs",
+    vault_folder_name: str = "GIFS",
     recipient_type: str = "collection",
     collection_id: Optional[str] = None,
     collection_name: Optional[str] = None,
@@ -1276,14 +1276,28 @@ async def _execute_single_model_send(group_id: str, model_id: str) -> dict:
                 except Exception as e:
                     logger.warning(f"Failed to unsend message {msg_id}: {e}")
 
+        from modules.mass_message import Recipient
         recipients = []
         if recipient_type == "test_user" and test_user_id:
-            recipients = [{"id": int(test_user_id), "name": "Test User", "username": "test"}]
+            test_user_id_str = str(test_user_id)
+            if test_user_id_str.startswith('u'):
+                test_user_id_str = test_user_id_str[1:]
+            user_id_int = int(test_user_id_str)
+            user = await auth.get_user(user_id_int)
+            if user:
+                recipients = [Recipient(
+                    user_id=user_id_int,
+                    username=user.username or f"user_{user_id_int}",
+                    name=user.name or user.username or "Fan",
+                )]
+            else:
+                logger.warning(f"Test user {user_id_int} not found, using fallback")
+                recipients = [Recipient(user_id=user_id_int, name="Fan", username=f"user_{user_id_int}")]
         elif recipient_type == "collection" and collection_id:
             from modules.collection_list import CollectionsManager
             collections_mgr = CollectionsManager(auth)
             users = await collections_mgr.get_collection_users(collection_id, fetch_all=True)
-            recipients = [{"id": u["id"], "name": u.get("name", ""), "username": u.get("username", "")} for u in users]
+            recipients = [Recipient(user_id=u["id"], name=u.get("name", ""), username=u.get("username", "")) for u in users]
             logger.info(f"Fetched {len(recipients)} recipients from collection {collection_id}")
 
         if not recipients:
@@ -1298,6 +1312,7 @@ async def _execute_single_model_send(group_id: str, model_id: str) -> dict:
 
         from modules.mass_message import MassMessenger
         messenger = MassMessenger(auth)
+
         results = await messenger.send_mass_message_parallel(
             recipients=recipients,
             message_template=current_caption,

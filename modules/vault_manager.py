@@ -246,6 +246,11 @@ class VaultManager:
             if folder.get("name", "").lower() == folder_name_lower:
                 return folder
 
+        available_names = [f.get("name", "") for f in folders]
+        logger.warning(
+            f"Folder '{folder_name}' not found for model {model_id}. "
+            f"Available folders: {available_names}"
+        )
         return None
 
     async def get_random_gifs_from_folder(
@@ -254,10 +259,11 @@ class VaultManager:
         folder_name: str,
         count: int,
     ) -> List[str]:
-        folder = await self.find_folder_by_exact_name(model_id, folder_name)
+        folder = await self.find_folder_by_pattern(model_id, folder_name)
         if not folder:
             logger.warning(f"Folder '{folder_name}' not found for model {model_id}")
             return []
+        logger.info(f"Found folder '{folder.get('name')}' matching pattern '{folder_name}' for model {model_id}")
 
         folder_id = folder.get("id")
         all_media = await self.get_all_vault_media(model_id, folder_id)
