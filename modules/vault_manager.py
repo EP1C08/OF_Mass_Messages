@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import random
 from typing import Dict, List, Optional
 
 import aiohttp
@@ -232,6 +233,48 @@ class VaultManager:
         ]
 
         return matching
+
+    async def find_folder_by_exact_name(
+        self,
+        model_id: str,
+        folder_name: str,
+    ) -> Optional[dict]:
+        folders = await self.get_vault_folders(model_id)
+        folder_name_lower = folder_name.lower()
+
+        for folder in folders:
+            if folder.get("name", "").lower() == folder_name_lower:
+                return folder
+
+        return None
+
+    async def get_random_gifs_from_folder(
+        self,
+        model_id: str,
+        folder_name: str,
+        count: int,
+    ) -> List[str]:
+        folder = await self.find_folder_by_exact_name(model_id, folder_name)
+        if not folder:
+            logger.warning(f"Folder '{folder_name}' not found for model {model_id}")
+            return []
+
+        folder_id = folder.get("id")
+        all_media = await self.get_all_vault_media(model_id, folder_id)
+        gifs = [m for m in all_media if m.get("type") == "gif"]
+
+        if not gifs:
+            logger.warning(f"No GIFs found in folder '{folder_name}' for model {model_id}")
+            return []
+
+        actual_count = min(count, len(gifs))
+        selected = random.sample(gifs, actual_count)
+        gif_ids = [str(g["id"]) for g in selected]
+
+        logger.info(
+            f"Selected {len(gif_ids)} random GIFs from '{folder_name}' for model {model_id}"
+        )
+        return gif_ids
 
 
 async def get_vault_manager(api_key: Optional[str] = None) -> VaultManager:

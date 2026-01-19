@@ -162,10 +162,10 @@ export default function VaultPage() {
       const data: VaultModelsResponse = await response.json();
       setModels(data.models || []);
 
-      // Auto-select first authenticated model
-      const authenticatedModel = data.models?.find(m => m.authenticated);
-      if (authenticatedModel) {
-        setSelectedModelId(authenticatedModel.model_id);
+      // Auto-select first model
+      const firstModel = data.models?.[0];
+      if (firstModel) {
+        setSelectedModelId(firstModel.model_id);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch models');
@@ -375,9 +375,9 @@ export default function VaultPage() {
 
   const selectedFolder = folders.find(f => f.id === selectedFolderId);
 
-  // Filter authenticated models and deduplicate by model_id
-  const authenticatedModels = models
-    .filter(m => m.authenticated)
+  // Deduplicate models by model_id (no longer filtering by authenticated status
+  // since vault API works regardless of that flag)
+  const availableModels = models
     .filter((model, index, self) =>
       index === self.findIndex(m => m.model_id === model.model_id)
     );
@@ -398,7 +398,7 @@ export default function VaultPage() {
               <SelectValue placeholder={isLoadingModels ? "Loading..." : "Select account"} />
             </SelectTrigger>
             <SelectContent>
-              {authenticatedModels.map((model, index) => (
+              {availableModels.map((model, index) => (
                 <SelectItem key={`${model.model_id}-${index}`} value={model.model_id}>
                   {model.label} ({model.model_id})
                 </SelectItem>

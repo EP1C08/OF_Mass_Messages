@@ -157,6 +157,13 @@ export default function ScheduledMessagesPage() {
     rotationCaptions: ["HI {name}", "I miss you {name}", "do you miss me {name}"] as string[],
     rotationEndAt: "" as string,  // ISO timestamp
     rotationDurationHours: 24,  // Default 24 hours
+    // Bulk rotation settings (send to ALL models at once)
+    enableBulkRotation: false,
+    bulkSelectedModelIds: [] as string[],
+    bulkVaultFolderName: "GIFs",
+    bulkGifCount: 5,
+    bulkEndDate: "",
+    bulkEndTime: "23:59",
   });
 
   // Set default accountId when accounts load
@@ -193,6 +200,12 @@ export default function ScheduledMessagesPage() {
       rotationCaptions: ["HI {name}", "I miss you {name}", "do you miss me {name}"],
       rotationEndAt: "",
       rotationDurationHours: 24,
+      enableBulkRotation: false,
+      bulkSelectedModelIds: [],
+      bulkVaultFolderName: "GIFs",
+      bulkGifCount: 5,
+      bulkEndDate: "",
+      bulkEndTime: "23:59",
     });
     setIsEditMode(false);
     setEditingMessage(null);
@@ -311,12 +324,73 @@ export default function ScheduledMessagesPage() {
 
   // Handle schedule new message or test execution
   const handleScheduleMessage = async () => {
-    const account = getAccountInfo(formData.accountId);
-    if (!account) return;
-
     setIsSubmitting(true);
 
     try {
+      // BULK ROTATION MODE - send to ALL selected models at once
+      if (formData.enableBulkRotation && formData.bulkSelectedModelIds.length > 0) {
+        // Build start time (end is determined by GIF count, not a fixed time)
+        const scheduledStartAt = formData.date && formData.time
+          ? new Date(`${formData.date}T${formData.time}:00`).toISOString()
+          : null;
+
+        // Call the bulk rotation API
+        // Note: No end_at - rotation stops after all GIFs have been sent (gif_count determines when to stop)
+        const bulkResponse = await fetch('/api/rotation/bulk/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model_ids: formData.bulkSelectedModelIds,
+            recipient_type: formData.recipientType,
+            collection_id: formData.recipientType === "collection" ? formData.collectionId : null,
+            collection_name: formData.recipientType === "collection" ? formData.collectionName : null,
+            test_user_id: formData.recipientType === "test_user" ? (formData.testUserId || "u528621767") : null,
+            vault_folder_name: formData.bulkVaultFolderName || "GIFs",
+            captions: formData.rotationCaptions.filter(c => c.trim() !== ''),
+            gif_count: formData.bulkGifCount || 5,
+            auto_unsend_after_minutes: formData.autoUnsendAfterMinutes || 1,
+            total_cycles: 1,  // Run through all GIFs once
+            start_at: scheduledStartAt,
+          }),
+        });
+
+        const bulkResult = await bulkResponse.json();
+
+        if (bulkResult.success) {
+          const startInfo = bulkResult.start_at
+            ? `Scheduled to start at ${new Date(bulkResult.start_at).toLocaleString()}`
+            : `Ready to start immediately`;
+          setTestResult({
+            success: true,
+            message: `Bulk rotation created for ${bulkResult.model_count} models! ${startInfo}. Group ID: ${bulkResult.group_id}. PENDING APPROVAL.`,
+            messageId: bulkResult.scheduled_message_id,
+            unsentPrevious: false,
+            autoUnsendAt: bulkResult.end_at,
+          });
+          setIsTestResultDialogOpen(true);
+          await refetchMessages();
+        } else {
+          setTestResult({
+            success: false,
+            message: 'Failed to create bulk rotation',
+            error: bulkResult.error || bulkResult.detail,
+            unsentPrevious: false,
+          });
+          setIsTestResultDialogOpen(true);
+        }
+
+        setIsScheduleDialogOpen(false);
+        resetForm();
+        return;
+      }
+
+      // Single model mode - require account selection
+      const account = getAccountInfo(formData.accountId);
+      if (!account) {
+        setIsSubmitting(false);
+        return;
+      }
+
       // If test_user recipient type, execute immediately instead of scheduling
       if (formData.recipientType === "test_user") {
         // Check if rotation mode is enabled
@@ -463,7 +537,8 @@ export default function ScheduledMessagesPage() {
   // Handle edit message
   const handleEditMessage = (message: ScheduledMessage) => {
     const msgDate = new Date(message.scheduledAt);
-    setFormData({
+    setFormData(prev => ({
+      ...prev,
       accountId: message.accountId,
       date: msgDate.toISOString().split('T')[0],
       time: msgDate.toTimeString().slice(0, 5),
@@ -474,7 +549,7 @@ export default function ScheduledMessagesPage() {
       collectionId: message.collectionId || "",
       collectionName: message.collectionName || "",
       autoUnsendPrevious: message.autoUnsendPrevious || false,
-    });
+    }));
     // Restore selected media IDs if any
     if (message.mediaIds && message.mediaIds.length > 0) {
       setSelectedMediaIds(message.mediaIds.map(id => parseInt(id)));
@@ -604,7 +679,7 @@ export default function ScheduledMessagesPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="h-[calc(100vh-120px)] flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -643,7 +718,7 @@ export default function ScheduledMessagesPage() {
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-[280px_1fr_350px]">
+      <div className="grid gap-6 lg:grid-cols-[280px_1fr_350px] flex-1 min-h-0 mt-6">
         {/* Left Sidebar - Creator List */}
         <Card>
           <CardHeader className="pb-2">
@@ -816,8 +891,8 @@ export default function ScheduledMessagesPage() {
         </Card>
 
         {/* Right Panel - Day Details */}
-        <Card>
-          <CardHeader className="pb-2">
+        <Card className="flex flex-col overflow-hidden">
+          <CardHeader className="pb-2 flex-shrink-0">
             <div className="flex items-center justify-between">
               <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => {
                 if (selectedDate) {
@@ -842,7 +917,7 @@ export default function ScheduledMessagesPage() {
               </Button>
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex-1 flex flex-col overflow-hidden">
             {/* Currently Active Message */}
             {isToday(selectedDate?.getDate() || 0) && activeMessage && (
               <>
@@ -875,9 +950,9 @@ export default function ScheduledMessagesPage() {
             )}
 
             {/* Scheduled Messages for Selected Day */}
-            <ScrollArea className="h-[400px] pr-4">
+            <ScrollArea className="h-[calc(100vh-380px)]">
               {selectedDateMessages.length > 0 ? (
-                <div className="space-y-3">
+                <div className="space-y-3 pr-4 pb-6">
                   <p className="text-xs text-muted-foreground uppercase font-medium">
                     Scheduled for this day ({selectedDateMessages.length})
                   </p>
@@ -985,13 +1060,27 @@ export default function ScheduledMessagesPage() {
                             <Check className="h-3 w-3 mr-1" />
                             Approve
                           </Button>
-                        ) : message.status === 'completed' || message.status === 'cancelled' ? (
-                          // Completed/cancelled - show status badge, no skip button
-                          <span className={`flex-1 text-center text-xs py-1 rounded ${
-                            message.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-                          }`}>
-                            {message.status === 'completed' ? 'Completed' : 'Cancelled'}
-                          </span>
+                        ) : message.status === 'completed' || message.status === 'cancelled' || message.status === 'failed' || (message.status === 'processing' && message.successCount !== undefined) ? (
+                          // Completed/cancelled/failed/processing with counts - show status badge with counts
+                          <div className="flex-1 flex flex-col gap-1">
+                            <span className={`text-center text-xs py-1 rounded ${
+                              message.status === 'completed' ? 'bg-green-100 text-green-700' :
+                              message.status === 'failed' ? 'bg-red-100 text-red-700' :
+                              message.status === 'processing' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'
+                            }`}>
+                              {message.status === 'completed' ? 'Completed' : message.status === 'failed' ? 'Failed' : message.status === 'processing' ? 'Running' : 'Cancelled'}
+                              {(message.successCount !== undefined || message.failedCount !== undefined) && (
+                                <span className="ml-1">
+                                  ({message.successCount || 0}/{(message.successCount || 0) + (message.failedCount || 0)})
+                                </span>
+                              )}
+                            </span>
+                            {message.status === 'failed' && message.errorMessage && (
+                              <span className="text-[10px] text-red-500 truncate" title={message.errorMessage}>
+                                {message.errorMessage}
+                              </span>
+                            )}
+                          </div>
                         ) : (
                           // Queued or processing - show skip button
                           <Button
@@ -1025,7 +1114,7 @@ export default function ScheduledMessagesPage() {
             </ScrollArea>
 
             {/* Add Message Button */}
-            <div className="mt-4 pt-4 border-t">
+            <div className="mt-4 pt-4 border-t flex-shrink-0">
               <Button
                 className="w-full"
                 variant="outline"
@@ -1059,23 +1148,97 @@ export default function ScheduledMessagesPage() {
           </DialogHeader>
           <div className="flex-1 overflow-y-auto pr-2">
           <div className="grid gap-4 py-4">
+            {/* Bulk Rotation Mode Toggle - at the top for visibility */}
+            <div className="p-4 rounded-lg border-2 border-dashed border-purple-500/50 bg-purple-500/5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label className="text-base font-medium text-purple-700">Bulk Rotation (All Models)</Label>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Send to ALL selected models simultaneously with GIF rotation
+                  </p>
+                </div>
+                <Button
+                  variant={formData.enableBulkRotation ? "default" : "outline"}
+                  size="sm"
+                  className={formData.enableBulkRotation ? "bg-purple-600 hover:bg-purple-700" : ""}
+                  onClick={() => {
+                    const newValue = !formData.enableBulkRotation;
+                    setFormData(prev => ({
+                      ...prev,
+                      enableBulkRotation: newValue,
+                      enableRotation: newValue ? true : prev.enableRotation,
+                      bulkSelectedModelIds: newValue ? authenticatedAccounts.map(a => a.id) : [],
+                    }));
+                  }}
+                >
+                  {formData.enableBulkRotation ? "Enabled" : "Disabled"}
+                </Button>
+              </div>
+            </div>
+
+            {/* Model Selection - Single or Multi depending on bulk mode */}
             <div className="grid gap-2">
-              <Label>Model</Label>
-              <Select
-                value={formData.accountId}
-                onValueChange={(value) => setFormData(prev => ({ ...prev, accountId: value }))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
+              <Label>{formData.enableBulkRotation ? "Select Models" : "Model"}</Label>
+              {formData.enableBulkRotation ? (
+                <div className="border rounded-lg p-3 space-y-2 max-h-[200px] overflow-y-auto">
+                  <div className="flex items-center justify-between pb-2 border-b">
+                    <span className="text-sm text-muted-foreground">
+                      {formData.bulkSelectedModelIds.length} of {authenticatedAccounts.length} selected
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        const allSelected = formData.bulkSelectedModelIds.length === authenticatedAccounts.length;
+                        setFormData(prev => ({
+                          ...prev,
+                          bulkSelectedModelIds: allSelected ? [] : authenticatedAccounts.map(a => a.id)
+                        }));
+                      }}
+                    >
+                      {formData.bulkSelectedModelIds.length === authenticatedAccounts.length ? "Deselect All" : "Select All"}
+                    </Button>
+                  </div>
                   {authenticatedAccounts.map(account => (
-                    <SelectItem key={account.id} value={account.id}>
-                      @{account.username} ({account.modelId})
-                    </SelectItem>
+                    <div key={account.id} className="flex items-center space-x-2">
+                      <Checkbox
+                        id={`model-${account.id}`}
+                        checked={formData.bulkSelectedModelIds.includes(account.id)}
+                        onCheckedChange={(checked) => {
+                          setFormData(prev => ({
+                            ...prev,
+                            bulkSelectedModelIds: checked
+                              ? [...prev.bulkSelectedModelIds, account.id]
+                              : prev.bulkSelectedModelIds.filter(id => id !== account.id)
+                          }));
+                        }}
+                      />
+                      <label
+                        htmlFor={`model-${account.id}`}
+                        className="text-sm cursor-pointer flex-1"
+                      >
+                        @{account.username} ({account.modelId})
+                      </label>
+                    </div>
                   ))}
-                </SelectContent>
-              </Select>
+                </div>
+              ) : (
+                <Select
+                  value={formData.accountId}
+                  onValueChange={(value) => setFormData(prev => ({ ...prev, accountId: value }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {authenticatedAccounts.map(account => (
+                      <SelectItem key={account.id} value={account.id}>
+                        @{account.username} ({account.modelId})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
 
             {/* Show date/time for scheduling - also shown in rotation mode */}
@@ -1148,7 +1311,7 @@ export default function ScheduledMessagesPage() {
                       value={formData.autoUnsendAfterMinutes || ""}
                       onChange={(e) => setFormData(prev => ({
                         ...prev,
-                        autoUnsendAfterMinutes: e.target.value ? parseInt(e.target.value) : undefined
+                        autoUnsendAfterMinutes: e.target.value ? parseInt(e.target.value) : 1
                       }))}
                     />
                     <span className="text-sm text-muted-foreground">minutes</span>
@@ -1225,30 +1388,81 @@ export default function ScheduledMessagesPage() {
                         </p>
                       </div>
 
-                      {/* Duration Setting */}
-                      <div className="grid gap-2">
-                        <Label>Run Duration (hours)</Label>
-                        <Input
-                          type="number"
-                          min="1"
-                          max="168"
-                          className="w-32"
-                          value={formData.rotationDurationHours || ""}
-                          onChange={(e) => setFormData(prev => ({
-                            ...prev,
-                            rotationDurationHours: e.target.value ? parseInt(e.target.value) : 24
-                          }))}
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          How long to run the rotation (1-168 hours / up to 7 days)
-                        </p>
-                      </div>
+                      {/* Bulk Rotation Settings - shown when bulk mode is enabled */}
+                      {formData.enableBulkRotation ? (
+                        <>
+                          {/* Vault Folder Name */}
+                          <div className="grid gap-2">
+                            <Label>Vault Folder Name</Label>
+                            <Input
+                              placeholder="GIFs"
+                              value={formData.bulkVaultFolderName}
+                              onChange={(e) => setFormData(prev => ({
+                                ...prev,
+                                bulkVaultFolderName: e.target.value
+                              }))}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              Folder name must be the same across all selected models
+                            </p>
+                          </div>
 
-                      <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/30">
-                        <p className="text-xs text-blue-600">
-                          <strong>How it works:</strong> Rotation starts at the scheduled date/time. Every {formData.autoUnsendAfterMinutes || 1} minute(s), the current message is unsent and replaced with the next caption + a random GIF. Captions cycle automatically until the {formData.rotationDurationHours || 24}-hour duration ends.
-                        </p>
-                      </div>
+                          {/* GIF Count */}
+                          <div className="grid gap-2">
+                            <Label>Number of GIFs to Use</Label>
+                            <Input
+                              type="number"
+                              min="1"
+                              max="100"
+                              className="w-32"
+                              value={formData.bulkGifCount}
+                              onChange={(e) => setFormData(prev => ({
+                                ...prev,
+                                bulkGifCount: e.target.value ? parseInt(e.target.value) : 5
+                              }))}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              Will randomly select this many GIFs from each model&apos;s folder
+                            </p>
+                          </div>
+
+                          <div className="p-3 rounded-lg bg-purple-500/10 border border-purple-500/30">
+                            <p className="text-xs text-purple-700">
+                              <strong>Bulk Rotation:</strong> All {formData.bulkSelectedModelIds.length} models will send simultaneously.
+                              {formData.bulkGifCount} random GIFs will be pre-selected from &quot;{formData.bulkVaultFolderName}&quot; folder.
+                              Each GIF rotates every {formData.autoUnsendAfterMinutes || 1} minute(s).
+                              <strong> Rotation stops after all {formData.bulkGifCount} GIFs have been sent.</strong>
+                            </p>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          {/* Duration Setting - for single model rotation */}
+                          <div className="grid gap-2">
+                            <Label>Run Duration (hours)</Label>
+                            <Input
+                              type="number"
+                              min="1"
+                              max="168"
+                              className="w-32"
+                              value={formData.rotationDurationHours || ""}
+                              onChange={(e) => setFormData(prev => ({
+                                ...prev,
+                                rotationDurationHours: e.target.value ? parseInt(e.target.value) : 24
+                              }))}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              How long to run the rotation (1-168 hours / up to 7 days)
+                            </p>
+                          </div>
+
+                          <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/30">
+                            <p className="text-xs text-blue-600">
+                              <strong>How it works:</strong> Rotation starts at the scheduled date/time. Every {formData.autoUnsendAfterMinutes || 1} minute(s), the current message is unsent and replaced with the next caption + a random GIF. Captions cycle automatically until the {formData.rotationDurationHours || 24}-hour duration ends.
+                            </p>
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1288,47 +1502,53 @@ export default function ScheduledMessagesPage() {
               </div>
             )}
 
-            <div className="grid gap-2">
-              <Label>Message Type</Label>
-              <div className="flex gap-4">
-                <Button
-                  variant={formData.messageType === "free" ? "default" : "outline"}
-                  className="flex-1"
-                  onClick={() => setFormData(prev => ({ ...prev, messageType: "free", price: "0" }))}
-                >
-                  <MessageSquare className="h-4 w-4 mr-2" />
-                  Free Mass Message
-                </Button>
-                <Button
-                  variant={formData.messageType === "ppv" ? "default" : "outline"}
-                  className="flex-1"
-                  onClick={() => setFormData(prev => ({ ...prev, messageType: "ppv", price: "15" }))}
-                >
-                  <DollarSign className="h-4 w-4 mr-2" />
-                  PPV Mass Message
-                </Button>
+            {/* Message Type - hide for bulk rotation (always free GIF messages) */}
+            {!formData.enableBulkRotation && (
+              <div className="grid gap-2">
+                <Label>Message Type</Label>
+                <div className="flex gap-4">
+                  <Button
+                    variant={formData.messageType === "free" ? "default" : "outline"}
+                    className="flex-1"
+                    onClick={() => setFormData(prev => ({ ...prev, messageType: "free", price: "0" }))}
+                  >
+                    <MessageSquare className="h-4 w-4 mr-2" />
+                    Free Mass Message
+                  </Button>
+                  <Button
+                    variant={formData.messageType === "ppv" ? "default" : "outline"}
+                    className="flex-1"
+                    onClick={() => setFormData(prev => ({ ...prev, messageType: "ppv", price: "15" }))}
+                  >
+                    <DollarSign className="h-4 w-4 mr-2" />
+                    PPV Mass Message
+                  </Button>
+                </div>
               </div>
-            </div>
+            )}
 
-            <div className="grid gap-2">
-              <div className="flex items-center justify-between">
-                <Label>Caption</Label>
-                <Button variant="ghost" size="sm" onClick={() => setIsCaptionDialogOpen(true)}>
-                  Load from Caption Vault
-                </Button>
+            {/* Single Caption - hide when rotation/bulk mode is enabled */}
+            {!formData.enableRotation && !formData.enableBulkRotation && (
+              <div className="grid gap-2">
+                <div className="flex items-center justify-between">
+                  <Label>Caption</Label>
+                  <Button variant="ghost" size="sm" onClick={() => setIsCaptionDialogOpen(true)}>
+                    Load from Caption Vault
+                  </Button>
+                </div>
+                <Textarea
+                  placeholder="THE BEST $15 YOU'LL EVER SPEND, TRUST ME"
+                  className="min-h-[100px]"
+                  value={formData.caption}
+                  onChange={(e) => setFormData(prev => ({ ...prev, caption: e.target.value }))}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Placeholders: {"{name}"} = fan name, ${"{price}"} = PPV price
+                </p>
               </div>
-              <Textarea
-                placeholder="THE BEST $15 YOU'LL EVER SPEND, TRUST ME"
-                className="min-h-[100px]"
-                value={formData.caption}
-                onChange={(e) => setFormData(prev => ({ ...prev, caption: e.target.value }))}
-              />
-              <p className="text-xs text-muted-foreground">
-                Placeholders: {"{name}"} = fan name, ${"{price}"} = PPV price
-              </p>
-            </div>
+            )}
 
-            {formData.messageType === "ppv" && (
+            {formData.messageType === "ppv" && !formData.enableBulkRotation && (
               <div className="grid gap-2">
                 <Label>PPV Price</Label>
                 <div className="flex items-center gap-2">
@@ -1343,74 +1563,80 @@ export default function ScheduledMessagesPage() {
               </div>
             )}
 
-            <div className="grid gap-2">
-              <div className="flex items-center justify-between">
-                <Label>GIFs</Label>
-                <Button variant="ghost" size="sm" onClick={openMediaDialog}>
-                  Browse GIF Vault
-                </Button>
+            {/* GIF Selection - hide when bulk rotation is enabled (GIFs auto-selected from folder) */}
+            {!formData.enableBulkRotation && (
+              <div className="grid gap-2">
+                <div className="flex items-center justify-between">
+                  <Label>GIFs</Label>
+                  <Button variant="ghost" size="sm" onClick={openMediaDialog}>
+                    Browse GIF Vault
+                  </Button>
+                </div>
+                <div className="flex flex-wrap gap-2 p-4 bg-muted/50 rounded-lg min-h-[80px]">
+                  {selectedMediaIds.length === 0 ? (
+                    <div className="flex items-center justify-center w-full text-sm text-muted-foreground">
+                      <ImageIcon className="h-5 w-5 mr-2" />
+                      No GIFs selected - click &quot;Browse GIF Vault&quot; to add
+                    </div>
+                  ) : (
+                    <>
+                      {selectedMediaPreviews.map((media) => {
+                        const thumbUrl = getMediaThumbnail(media);
+                        return (
+                        <div key={media.id} className="relative group">
+                          {thumbUrl ? (
+                            <img
+                              src={thumbUrl}
+                              alt="Selected media"
+                              className="w-16 h-16 rounded object-cover"
+                            />
+                          ) : (
+                            <div className="w-16 h-16 rounded bg-muted flex items-center justify-center">
+                              <ImageIcon className="h-6 w-6 text-muted-foreground" />
+                            </div>
+                          )}
+                          <button
+                            onClick={() => handleMediaToggle(media)}
+                            className="absolute -top-1 -right-1 w-5 h-5 bg-destructive text-destructive-foreground rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                          {media.type === 'video' && (
+                            <div className="absolute bottom-1 right-1 bg-black/60 rounded px-1">
+                              <Video className="h-3 w-3 text-white" />
+                            </div>
+                          )}
+                        </div>
+                      );})}
+                      {selectedMediaIds.length > selectedMediaPreviews.length && (
+                        <div className="w-16 h-16 rounded bg-muted flex items-center justify-center text-xs text-muted-foreground">
+                          +{selectedMediaIds.length - selectedMediaPreviews.length} more
+                        </div>
+                      )}
+                      <span className="text-sm text-muted-foreground self-center ml-2">
+                        {selectedMediaIds.length} item{selectedMediaIds.length !== 1 ? 's' : ''} selected
+                      </span>
+                    </>
+                  )}
+                </div>
               </div>
-              <div className="flex flex-wrap gap-2 p-4 bg-muted/50 rounded-lg min-h-[80px]">
-                {selectedMediaIds.length === 0 ? (
-                  <div className="flex items-center justify-center w-full text-sm text-muted-foreground">
-                    <ImageIcon className="h-5 w-5 mr-2" />
-                    No GIFs selected - click &quot;Browse GIF Vault&quot; to add
-                  </div>
-                ) : (
-                  <>
-                    {selectedMediaPreviews.map((media) => {
-                      const thumbUrl = getMediaThumbnail(media);
-                      return (
-                      <div key={media.id} className="relative group">
-                        {thumbUrl ? (
-                          <img
-                            src={thumbUrl}
-                            alt="Selected media"
-                            className="w-16 h-16 rounded object-cover"
-                          />
-                        ) : (
-                          <div className="w-16 h-16 rounded bg-muted flex items-center justify-center">
-                            <ImageIcon className="h-6 w-6 text-muted-foreground" />
-                          </div>
-                        )}
-                        <button
-                          onClick={() => handleMediaToggle(media)}
-                          className="absolute -top-1 -right-1 w-5 h-5 bg-destructive text-destructive-foreground rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                        {media.type === 'video' && (
-                          <div className="absolute bottom-1 right-1 bg-black/60 rounded px-1">
-                            <Video className="h-3 w-3 text-white" />
-                          </div>
-                        )}
-                      </div>
-                    );})}
-                    {selectedMediaIds.length > selectedMediaPreviews.length && (
-                      <div className="w-16 h-16 rounded bg-muted flex items-center justify-center text-xs text-muted-foreground">
-                        +{selectedMediaIds.length - selectedMediaPreviews.length} more
-                      </div>
-                    )}
-                    <span className="text-sm text-muted-foreground self-center ml-2">
-                      {selectedMediaIds.length} item{selectedMediaIds.length !== 1 ? 's' : ''} selected
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
+            )}
 
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id="auto-unsend"
-                checked={formData.autoUnsendPrevious}
-                onCheckedChange={(checked) =>
-                  setFormData(prev => ({ ...prev, autoUnsendPrevious: checked as boolean }))
-                }
-              />
-              <Label htmlFor="auto-unsend" className="font-normal">
-                Unsend previous MM when this one sends
-              </Label>
-            </div>
+            {/* Auto-unsend checkbox - hide for bulk rotation (handled automatically) */}
+            {!formData.enableBulkRotation && (
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="auto-unsend"
+                  checked={formData.autoUnsendPrevious}
+                  onCheckedChange={(checked) =>
+                    setFormData(prev => ({ ...prev, autoUnsendPrevious: checked as boolean }))
+                  }
+                />
+                <Label htmlFor="auto-unsend" className="font-normal">
+                  Unsend previous MM when this one sends
+                </Label>
+              </div>
+            )}
           </div>
           </div>
           <DialogFooter className="flex-shrink-0 pt-4 border-t">
@@ -1423,20 +1649,33 @@ export default function ScheduledMessagesPage() {
             <Button
               onClick={handleScheduleMessage}
               disabled={
-                (!formData.enableRotation && !formData.caption.trim()) ||
                 isSubmitting ||
-                (formData.recipientType === "test_user" && !(formData.testUserId || '').trim()) ||
-                (formData.enableRotation && formData.rotationCaptions.filter(c => c.trim()).length === 0)
+                (formData.enableBulkRotation && formData.bulkSelectedModelIds.length === 0) ||
+                (formData.enableBulkRotation && formData.rotationCaptions.filter(c => c.trim()).length === 0) ||
+                (formData.enableBulkRotation && formData.bulkGifCount < 1) ||
+                (!formData.enableBulkRotation && !formData.enableRotation && !formData.caption.trim()) ||
+                (!formData.enableBulkRotation && formData.recipientType === "test_user" && !(formData.testUserId || '').trim()) ||
+                (!formData.enableBulkRotation && formData.enableRotation && formData.rotationCaptions.filter(c => c.trim()).length === 0)
               }
+              className={formData.enableBulkRotation ? "bg-purple-600 hover:bg-purple-700" : ""}
             >
               {isSubmitting ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  {formData.enableRotation ? "Scheduling Rotation..." : (formData.recipientType === "test_user" ? "Sending Test..." : (isEditMode ? "Updating..." : "Scheduling..."))}
+                  {formData.enableBulkRotation
+                    ? `Scheduling ${formData.bulkSelectedModelIds.length} Models...`
+                    : formData.enableRotation
+                      ? "Scheduling Rotation..."
+                      : (formData.recipientType === "test_user" ? "Sending Test..." : (isEditMode ? "Updating..." : "Scheduling..."))}
                 </>
               ) : (
                 <>
-                  {formData.enableRotation ? (
+                  {formData.enableBulkRotation ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                      Start Bulk Rotation ({formData.bulkSelectedModelIds.length} models)
+                    </>
+                  ) : formData.enableRotation ? (
                     <>
                       <Calendar className="h-4 w-4 mr-2" />
                       Schedule Rotation

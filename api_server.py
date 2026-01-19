@@ -111,24 +111,16 @@ async def close_all_sessions():
         _auth_cache.clear()
 
 
-async def _authenticate_single_model(model_id: str, username: str) -> Optional[dict]:
-    try:
-        logger.info(f"Authenticating {username} ({model_id})...")
-        results = await authenticate_from_db(model_id=model_id)
-
-        if results and results[0].get("success") and results[0].get("authed"):
-            logger.info(f"{username} ({model_id}) authenticated successfully")
-            return results[0]
-        else:
-            logger.warning(f"Failed to authenticate {username} ({model_id})")
-            return None
-    except Exception as e:
-        logger.error(f"Error authenticating {username} ({model_id}): {e}")
-        return None
-
-
 async def authenticate_all_accounts():
+    """Authenticate all accounts using batch DB query + parallel OnlyFans auth."""
     global _auth_cache
+    import os
+    from modules.db_credential_loader import load_multiple_credentials_from_db
+    from modules.gologin_manager import GoLoginManager
+    from ultima_scraper_api import select_api
+    from ultima_scraper_api.apis.onlyfans.classes.extras import AuthDetails
+    from ultima_scraper_api.apis.onlyfans.authenticator import OnlyFansAuthenticator
+    from ultima_scraper_api.config import UltimaScraperAPIConfig
 
     logger.info("=" * 60)
     logger.info("AUTHENTICATING ALL ACCOUNTS IN PARALLEL")
@@ -141,23 +133,106 @@ async def authenticate_all_accounts():
             logger.warning("No models found in database")
             return
 
-        logger.info(f"Found {len(models)} accounts to authenticate")
+        model_ids = [m["model_id"] for m in models]
 
-        auth_tasks = [
-            _authenticate_single_model(m["model_id"], m["username"])
-            for m in models
-        ]
+        # Step 1: Single DB query for all credentials (avoids connection timeouts)
+        logger.info(f"Loading credentials for {len(model_ids)} models...")
+        credentials_map = await load_multiple_credentials_from_db(model_ids)
 
-        results = await asyncio.gather(*auth_tasks, return_exceptions=True)
+        if not credentials_map:
+            logger.warning("No credentials loaded from database")
+            return
+
+        logger.info(f"Loaded {len(credentials_map)} credentials from database")
+
+        # Helper to get proxy from GoLogin
+        async def get_proxy_from_gologin(profile_id: str, account_name: str) -> Optional[str]:
+            token = os.getenv("GOLOGIN_API_TOKEN")
+            if not token:
+                return None
+            manager = None
+            try:
+                manager = GoLoginManager(api_token=token)
+                profile_data = await manager.get_profile(profile_id)
+                if profile_data:
+                    return manager._extract_proxy_url(profile_data)
+            except Exception as e:
+                logger.error(f"[{account_name}] GoLogin error: {e}")
+            finally:
+                if manager:
+                    await manager.close()
+            return None
+
+        # Step 2: Authenticate with OnlyFans API in parallel
+        async def auth_single_with_cred(model_id: str, cred: dict) -> tuple:
+            account_name = cred.get("username", "Unknown")
+            auth_data = cred.get("auth", {})
+            gologin_profile_id = cred.get("gologin_profile_id")
+
+            if not auth_data:
+                return model_id, {"success": False, "error": "No auth data"}
+
+            try:
+                auth_details = AuthDetails(
+                    id=cred.get("id"),
+                    username=account_name,
+                    cookie=auth_data.get("cookie", ""),
+                    x_bc=auth_data.get("x_bc", ""),
+                    user_agent=auth_data.get("user_agent", ""),
+                )
+
+                proxy_url = None
+                if gologin_profile_id:
+                    proxy_url = await get_proxy_from_gologin(gologin_profile_id, account_name)
+
+                if proxy_url:
+                    config = UltimaScraperAPIConfig()
+                    config.settings.network.proxies = [proxy_url]
+                    api = select_api("onlyfans", config=config)
+                else:
+                    api = select_api("onlyfans")
+
+                authenticator = OnlyFansAuthenticator(api, auth_details)
+                auth = await authenticator.login()
+
+                if auth and authenticator.is_authed():
+                    return model_id, {
+                        "authed": auth,
+                        "api": api,
+                        "account_name": account_name,
+                        "model_id": cred.get("id"),
+                        "proxy_url": proxy_url,
+                        "success": True
+                    }
+                else:
+                    error_messages = []
+                    if authenticator.errors:
+                        for error in authenticator.errors:
+                            error_messages.append(f"{error.code}: {error.message}")
+                    return model_id, {
+                        "success": False,
+                        "error": "; ".join(error_messages) if error_messages else "Authentication failed"
+                    }
+            except Exception as e:
+                return model_id, {"success": False, "error": str(e)}
+
+        logger.info("Authenticating with OnlyFans API in parallel...")
+        tasks = [auth_single_with_cred(mid, cred) for mid, cred in credentials_map.items()]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
         async with _auth_lock:
             success_count = 0
-            for model, result in zip(models, results):
+            for result in results:
                 if isinstance(result, Exception):
-                    logger.error(f"Exception for {model['username']}: {result}")
-                elif result is not None:
-                    _auth_cache[model["model_id"]] = result
-                    success_count += 1
+                    logger.error(f"Exception during auth: {result}")
+                elif isinstance(result, tuple):
+                    model_id, auth_result = result
+                    if auth_result.get("success"):
+                        _auth_cache[model_id] = auth_result
+                        logger.info(f"Authenticated: {auth_result.get('account_name')}")
+                        success_count += 1
+                    else:
+                        logger.warning(f"Failed to authenticate {model_id}: {auth_result.get('error')}")
 
         logger.info("=" * 60)
         logger.info(f"AUTHENTICATION COMPLETE: {success_count}/{len(models)} accounts")
@@ -825,10 +900,10 @@ async def delete_scheduled_message(message_id: str):
         status = data.get("status")
 
         # Rotations can be deleted in any state (including completed for cleanup)
-        # Regular messages can only be deleted if queued or cancelled
+        # Regular messages cannot be deleted while processing
         if not is_rotation:
-            if status not in ["queued", "cancelled"]:
-                raise HTTPException(status_code=400, detail="Can only delete queued or cancelled messages")
+            if status == "processing":
+                raise HTTPException(status_code=400, detail="Cannot delete messages that are currently processing")
 
         # Delete the document directly
         await doc.reference.delete()
@@ -1452,6 +1527,316 @@ async def get_rotation_status(account_id: str):
         }
     except Exception as e:
         logger.error(f"Error getting rotation status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Bulk Rotation API - Schedule GIFs on ALL Models
+# ============================================================================
+
+class StartBulkRotationRequest(BaseModel):
+    model_ids: Optional[List[str]] = None
+    recipient_type: str = "collection"
+    collection_id: Optional[str] = None
+    collection_name: Optional[str] = None
+    test_user_id: Optional[str] = None
+    vault_folder_name: str = "GIFs"
+    captions: List[str]
+    gif_count: int
+    auto_unsend_after_minutes: int = 60
+    total_cycles: int = 1
+    end_at: Optional[str] = None
+    start_at: Optional[str] = None
+    stagger_minutes: int = 0
+
+
+@app.post("/rotation/bulk/start")
+async def api_start_bulk_rotation(request: StartBulkRotationRequest):
+    """Start synchronized GIF rotation across ALL models at once.
+
+    This will:
+    1. If model_ids is None, use ALL authenticated models
+    2. For each model, find the vault folder by name (e.g., "GIFs")
+    3. Pre-select X random GIFs from each model's folder
+    4. Create rotation state for each model with the GIF queue
+    5. When approved and started, all models send at exact same times (parallel)
+    6. Send GIF+caption to target (collection or test_user)
+    """
+    try:
+        from modules.scheduler import start_bulk_rotation
+
+        if request.recipient_type == "collection":
+            if not request.collection_id or not request.collection_name:
+                raise HTTPException(
+                    status_code=400,
+                    detail="collection_id and collection_name required for collection mode"
+                )
+        elif request.recipient_type == "test_user":
+            if not request.test_user_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="test_user_id required for test_user mode"
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="recipient_type must be 'collection' or 'test_user'"
+            )
+
+        end_at_dt = None
+        if request.end_at:
+            end_at_dt = datetime.fromisoformat(request.end_at.replace("Z", "+00:00"))
+        start_at_dt = None
+        if request.start_at:
+            start_at_dt = datetime.fromisoformat(request.start_at.replace("Z", "+00:00"))
+
+        if request.model_ids:
+            model_ids = request.model_ids
+        else:
+            models = await list_models_from_db()
+            model_ids = [
+                m["model_id"] for m in models
+                if m.get("authenticated", False)
+            ]
+
+        if not model_ids:
+            raise HTTPException(status_code=400, detail="No models available")
+
+        result = await start_bulk_rotation(
+            model_ids=model_ids,
+            recipient_type=request.recipient_type,
+            collection_id=request.collection_id,
+            collection_name=request.collection_name,
+            test_user_id=request.test_user_id,
+            vault_folder_name=request.vault_folder_name,
+            captions=request.captions,
+            gif_count=request.gif_count,
+            auto_unsend_after_minutes=request.auto_unsend_after_minutes,
+            total_cycles=request.total_cycles,
+            end_at=end_at_dt,
+            start_at=start_at_dt,
+            stagger_minutes=request.stagger_minutes,
+        )
+
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "Failed to start bulk rotation")
+            )
+
+        db = get_firestore_client()
+        group_id = result["group_id"]
+        now = datetime.now(timezone.utc)
+
+        captions_preview = " | ".join(request.captions[:3])
+        if len(request.captions) > 3:
+            captions_preview += f" (+{len(request.captions) - 3} more)"
+
+        recipient_label = (
+            request.collection_name
+            if request.recipient_type == "collection"
+            else f"test_user:{request.test_user_id}"
+        )
+
+        scheduled_msg_doc = {
+            "id": f"bulk_{group_id}",
+            "account_id": "ALL_MODELS",
+            "account_username": f"{len(model_ids)} models",
+            "message_content": f"[BULK ROTATION] {captions_preview}",
+            "media_ids": None,
+            "price": 0,
+            "recipient_type": request.recipient_type,
+            "recipient_count": 1 if request.recipient_type == "test_user" else -1,
+            "collection_id": request.collection_id,
+            "collection_name": request.collection_name,
+            "test_user_id": request.test_user_id,
+            "scheduled_at": start_at_dt or now,
+            "status": "queued",
+            "approval_status": "pending",
+            "auto_unsend_previous": True,
+            "auto_unsend_after_minutes": request.auto_unsend_after_minutes,
+            "created_at": now,
+            "updated_at": now,
+            "is_rotation": True,
+            "is_bulk_rotation": True,
+            "bulk_group_id": group_id,
+            "rotation_captions": request.captions,
+            "rotation_end_at": end_at_dt.isoformat() if end_at_dt else None,
+            "model_ids": model_ids,
+            "vault_folder_name": request.vault_folder_name,
+            "gif_count": request.gif_count,
+            "total_cycles": request.total_cycles,
+            "stagger_minutes": request.stagger_minutes,
+        }
+
+        await db.collection("scheduled_messages").document(f"bulk_{group_id}").set(
+            scheduled_msg_doc
+        )
+
+        return {
+            "success": True,
+            "group_id": group_id,
+            "model_count": len(model_ids),
+            "model_ids": model_ids,
+            "recipient_type": request.recipient_type,
+            "recipient_label": recipient_label,
+            "collection_id": request.collection_id,
+            "collection_name": request.collection_name,
+            "test_user_id": request.test_user_id,
+            "vault_folder_name": request.vault_folder_name,
+            "gif_count": request.gif_count,
+            "gif_queues": result.get("gif_queues"),
+            "total_cycles": request.total_cycles,
+            "end_at": end_at_dt.isoformat() if end_at_dt else None,
+            "start_at": start_at_dt.isoformat() if start_at_dt else None,
+            "scheduled_message_id": f"bulk_{group_id}",
+            "approval_status": "pending",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting bulk rotation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/rotation/bulk/approve/{group_id}")
+async def api_approve_bulk_rotation(group_id: str):
+    """Approve a bulk rotation group to start.
+
+    This will:
+    1. Enable all rotation states for models in the group
+    2. If scheduled for future: schedule the group start job
+    3. If immediate: start all rotations simultaneously
+    """
+    try:
+        from modules.scheduler import (
+            schedule_bulk_rotation_start_job,
+            _execute_bulk_rotation_start,
+        )
+
+        db = get_firestore_client()
+
+        group_doc = await db.collection("bulk_rotation_groups").document(group_id).get()
+        if not group_doc.exists:
+            raise HTTPException(status_code=404, detail="Bulk rotation group not found")
+
+        group_data = group_doc.to_dict()
+
+        if group_data.get("approval_status") != "pending":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Group is already {group_data.get('approval_status')}"
+            )
+
+        now = datetime.now(timezone.utc)
+        model_ids = group_data.get("model_ids", [])
+
+        start_at = group_data.get("start_at")
+        is_future = False
+        if start_at:
+            if hasattr(start_at, 'timestamp'):
+                start_at_dt = datetime.fromtimestamp(start_at.timestamp(), tz=timezone.utc)
+            elif isinstance(start_at, datetime):
+                start_at_dt = start_at if start_at.tzinfo else start_at.replace(tzinfo=timezone.utc)
+            else:
+                start_at_dt = now
+            is_future = start_at_dt > now
+        else:
+            start_at_dt = now
+
+        await group_doc.reference.update({
+            "approval_status": "approved",
+            "approved_at": now,
+        })
+
+        scheduled_msg_ref = db.collection("scheduled_messages").document(f"bulk_{group_id}")
+        await scheduled_msg_ref.update({
+            "approval_status": "approved",
+            "approved_at": now,
+            "updated_at": now,
+        })
+
+        if is_future:
+            await schedule_bulk_rotation_start_job(group_id, start_at_dt)
+
+            return {
+                "success": True,
+                "message": f"Bulk rotation approved, scheduled for {start_at_dt.isoformat()}",
+                "scheduled": True,
+                "start_at": start_at_dt.isoformat(),
+                "model_count": len(model_ids),
+            }
+        else:
+            await _execute_bulk_rotation_start(group_id)
+
+            return {
+                "success": True,
+                "message": "Bulk rotation approved and started",
+                "scheduled": False,
+                "model_count": len(model_ids),
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error approving bulk rotation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/rotation/bulk/stop/{group_id}")
+async def api_stop_bulk_rotation(group_id: str):
+    """Stop all rotations in a bulk group."""
+    try:
+        from modules.scheduler import stop_bulk_rotation
+
+        result = await stop_bulk_rotation(group_id)
+
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "Failed to stop bulk rotation")
+            )
+
+        db = get_firestore_client()
+        scheduled_msg_ref = db.collection("scheduled_messages").document(f"bulk_{group_id}")
+        doc = await scheduled_msg_ref.get()
+        if doc.exists:
+            await scheduled_msg_ref.update({
+                "status": "cancelled",
+                "updated_at": datetime.now(timezone.utc),
+            })
+
+        return {
+            "success": True,
+            "message": f"Stopped bulk rotation for {result.get('model_count', 0)} models",
+            "model_count": result.get("model_count", 0),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error stopping bulk rotation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/rotation/bulk/status/{group_id}")
+async def api_get_bulk_rotation_status(group_id: str):
+    """Get status of a bulk rotation group including all models."""
+    try:
+        from modules.scheduler import get_bulk_rotation_status
+
+        status = await get_bulk_rotation_status(group_id)
+
+        if not status:
+            raise HTTPException(status_code=404, detail="Bulk rotation group not found")
+
+        return status
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting bulk rotation status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

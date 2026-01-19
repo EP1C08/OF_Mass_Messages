@@ -46,7 +46,7 @@ export interface ScheduledMessage {
   testUserId?: string;
   scheduledAt: string;
   recurrence?: 'daily' | 'weekly' | 'monthly';
-  status: 'queued' | 'processing' | 'completed' | 'cancelled';
+  status: 'queued' | 'processing' | 'completed' | 'cancelled' | 'failed';
   approvalStatus: 'pending' | 'approved';
   autoUnsendPrevious?: boolean;
   autoUnsendAfterMinutes?: number;

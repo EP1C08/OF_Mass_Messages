@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -30,6 +30,8 @@ class DatabaseCredentialLoader:
             max_overflow=1,
             pool_pre_ping=True,
             pool_recycle=3600,
+            pool_timeout=60,
+            connect_args={"timeout": 60},
             echo=False
         )
         self.async_session = async_sessionmaker(
@@ -197,5 +199,43 @@ async def list_models_from_db(
 
             logger.info(f"Listed {len(models)} models from database (no auth)")
             return models
+    finally:
+        await loader.close()
+
+
+async def load_multiple_credentials_from_db(
+    model_ids: List[str],
+    database_url: Optional[str] = None,
+    encryption_key: Optional[str] = None,
+) -> Dict[str, dict]:
+    """
+    Load credentials for multiple model IDs in a single database query.
+    Returns a dictionary mapping model_id to credential dict.
+    """
+    loader = DatabaseCredentialLoader(database_url, encryption_key)
+
+    try:
+        async with loader.async_session() as session:
+            stmt = select(CreatorCredential).where(
+                (CreatorCredential.model_id.in_(model_ids)) &
+                (CreatorCredential.status == 'active')
+            )
+
+            result = await session.execute(stmt)
+            credentials = result.scalars().all()
+
+            result_map = {}
+            for credential in credentials:
+                decrypted = loader._decrypt_credential(credential)
+                if decrypted:
+                    result_map[str(credential.model_id)] = decrypted
+
+            logger.info(f"Loaded {len(result_map)} credentials for {len(model_ids)} requested model IDs")
+            return result_map
+
+    except Exception as e:
+        logger.error(f"Failed to load multiple credentials: {e}")
+        return {}
+
     finally:
         await loader.close()

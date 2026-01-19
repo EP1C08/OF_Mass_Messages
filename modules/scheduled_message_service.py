@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from google.cloud import firestore
 from google.cloud.firestore_v1 import AsyncClient, FieldFilter
 
 from modules.firebase_client import get_firestore_client
@@ -65,6 +66,29 @@ class ScheduledMessageService:
         finally:
             await close_session(auth)
 
+        return await self._create_scheduled_message_internal(
+            request, account_username, recipient_count
+        )
+
+    async def create_scheduled_message_with_auth(
+        self,
+        request: CreateScheduledMessageRequest,
+        auth,
+        account_username: str,
+        recipient_count: int,
+    ) -> ScheduledMessageResponse:
+        """Create scheduled message using pre-authenticated session (no close)."""
+        return await self._create_scheduled_message_internal(
+            request, account_username, recipient_count
+        )
+
+    async def _create_scheduled_message_internal(
+        self,
+        request: CreateScheduledMessageRequest,
+        account_username: str,
+        recipient_count: int,
+    ) -> ScheduledMessageResponse:
+        """Internal method to create scheduled message document."""
         doc_id = str(uuid4())
         now = datetime.now(timezone.utc)
 
@@ -185,8 +209,8 @@ class ScheduledMessageService:
             if data["status"] == MessageStatus.COMPLETED.value:
                 raise ValueError("Cannot delete completed rotations")
         else:
-            if data["status"] not in [MessageStatus.QUEUED.value, MessageStatus.CANCELLED.value]:
-                raise ValueError("Can only delete queued or cancelled messages")
+            if data["status"] == MessageStatus.PROCESSING.value:
+                raise ValueError("Cannot delete messages that are currently processing")
 
         results_ref = doc_ref.collection(SUBCOLLECTION_RESULTS)
         async for result_doc in results_ref.stream():
@@ -236,138 +260,153 @@ class ScheduledMessageService:
         updated_doc = await doc_ref.get()
         return self._to_response(updated_doc.to_dict())
 
-    async def execute_scheduled_message(self, message_id: str) -> None:
+    async def execute_scheduled_message(self, message_id: str, session: Optional[dict] = None) -> None:
         doc_ref = self.db.collection(COLLECTION_SCHEDULED).document(message_id)
-        doc = await doc_ref.get()
 
-        if not doc.exists:
+        @firestore.async_transactional
+        async def claim_message(transaction):
+            doc = await doc_ref.get(transaction=transaction)
+
+            if not doc.exists:
+                return None, "not_found"
+
+            data = doc.to_dict()
+
+            if data["status"] != MessageStatus.QUEUED.value:
+                return None, f"not_queued:{data['status']}"
+
+            if data["approval_status"] != ApprovalStatus.APPROVED.value:
+                return None, "not_approved"
+
+            transaction.update(doc_ref, {
+                "status": MessageStatus.PROCESSING.value,
+                "started_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+            })
+
+            return data, None
+
+        transaction = self.db.transaction()
+        data, error = await claim_message(transaction)
+
+        if error == "not_found":
             logger.error(f"Scheduled message {message_id} not found")
             return
-
-        data = doc.to_dict()
-
-        if data["status"] != MessageStatus.QUEUED.value:
-            logger.warning(f"Message {message_id} is not queued (status: {data['status']})")
+        if error and error.startswith("not_queued:"):
+            status = error.split(":")[1]
+            logger.warning(f"Message {message_id} is not queued (status: {status}), skipping")
             return
-
-        if data["approval_status"] != ApprovalStatus.APPROVED.value:
+        if error == "not_approved":
             logger.warning(f"Message {message_id} is not approved")
             return
-
-        await doc_ref.update({
-            "status": MessageStatus.PROCESSING.value,
-            "started_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc),
-        })
 
         account_id = data["account_id"]
         all_results: List[Any] = []
         all_message_ids: List[str] = []
+        owns_session = session is None
 
         try:
-            auth_results = await authenticate_from_db(model_id=account_id)
-            if not auth_results or not auth_results[0].get("success"):
-                raise Exception(f"Authentication failed for account {account_id}")
+            if session:
+                auth = session["authed"]
+                account_username = session.get("account_name", "Unknown")
+            else:
+                from modules.scheduler import get_or_create_session
+                session = await get_or_create_session(account_id)
+                if not session:
+                    raise Exception(f"Authentication failed for account {account_id}")
+                auth = session["authed"]
+                account_username = session.get("account_name", "Unknown")
 
-            account_data = auth_results[0]
-            auth = account_data["authed"]
-            account_username = account_data.get("account_name", "Unknown")
+            if data.get("auto_unsend_previous", False):
+                await self._unsend_active_message(account_id, auth)
 
-            try:
-                if data.get("auto_unsend_previous", False):
-                    await self._unsend_active_message(account_id, auth)
+            recipients = await self._get_recipients(
+                auth,
+                RecipientType(data["recipient_type"]),
+                data.get("collection_id"),
+                data.get("test_user_id"),
+            )
 
-                recipients = await self._get_recipients(
-                    auth,
-                    RecipientType(data["recipient_type"]),
-                    data.get("collection_id"),
-                    data.get("test_user_id"),
+            if not recipients:
+                logger.warning(f"No recipients found for message {message_id}")
+                await doc_ref.update({
+                    "status": MessageStatus.COMPLETED.value,
+                    "success_count": 0,
+                    "failed_count": 0,
+                    "completed_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(timezone.utc),
+                })
+                return
+
+            total_recipients = len(recipients)
+            logger.info(f"Starting parallel send to {total_recipients} recipients")
+            logger.info(
+                f"Config: {self.CONCURRENT_SENDS} parallel, "
+                f"{self.BATCH_DELAY}s delay, re-auth every {self.REAUTH_INTERVAL}"
+            )
+
+            media_ids = None
+            if data.get("media_ids"):
+                media_ids = [int(m) for m in data["media_ids"]]
+
+            for chunk_start in range(0, total_recipients, self.REAUTH_INTERVAL):
+                chunk_end = min(chunk_start + self.REAUTH_INTERVAL, total_recipients)
+                chunk = recipients[chunk_start:chunk_end]
+                chunk_num = (chunk_start // self.REAUTH_INTERVAL) + 1
+                total_chunks = (total_recipients + self.REAUTH_INTERVAL - 1) // self.REAUTH_INTERVAL
+
+                logger.info(f"=" * 50)
+                logger.info(f"CHUNK {chunk_num}/{total_chunks}: Recipients {chunk_start + 1}-{chunk_end}")
+                logger.info(f"=" * 50)
+
+                if chunk_start > 0:
+                    logger.info(f"Re-authenticating for chunk {chunk_num}...")
+                    from modules.scheduler import remove_session, get_or_create_session
+                    await remove_session(account_id)
+                    session = await get_or_create_session(account_id)
+                    if not session:
+                        raise Exception(f"Re-authentication failed at chunk {chunk_num}")
+                    auth = session["authed"]
+                    logger.info(f"Re-authenticated successfully for chunk {chunk_num}")
+
+                messenger = MassMessenger(auth)
+                chunk_results = await messenger.send_mass_message_parallel(
+                    recipients=chunk,
+                    message_template=data["message_content"],
+                    media_ids=media_ids,
+                    price=data.get("price", 0),
+                    concurrent_sends=self.CONCURRENT_SENDS,
+                    batch_delay=self.BATCH_DELAY,
                 )
 
-                if not recipients:
-                    logger.warning(f"No recipients found for message {message_id}")
-                    await doc_ref.update({
-                        "status": MessageStatus.COMPLETED.value,
-                        "success_count": 0,
-                        "failed_count": 0,
-                        "completed_at": datetime.now(timezone.utc),
-                        "updated_at": datetime.now(timezone.utc),
-                    })
-                    return
+                all_results.extend(chunk_results)
 
-                total_recipients = len(recipients)
-                logger.info(f"Starting parallel send to {total_recipients} recipients")
+                for result in chunk_results:
+                    result_doc = {
+                        "user_id": result.user_id,
+                        "username": result.username,
+                        "success": result.success,
+                        "error_message": result.error,
+                        "message_id": getattr(result, 'message_id', None),
+                        "sent_at": datetime.now(timezone.utc),
+                    }
+                    await doc_ref.collection(SUBCOLLECTION_RESULTS).add(result_doc)
+
+                    if result.success and hasattr(result, 'message_id') and result.message_id:
+                        all_message_ids.append(str(result.message_id))
+
+                current_success = sum(1 for r in all_results if r.success)
+                current_failed = len(all_results) - current_success
+                await doc_ref.update({
+                    "success_count": current_success,
+                    "failed_count": current_failed,
+                    "updated_at": datetime.now(timezone.utc),
+                })
+
                 logger.info(
-                    f"Config: {self.CONCURRENT_SENDS} parallel, "
-                    f"{self.BATCH_DELAY}s delay, re-auth every {self.REAUTH_INTERVAL}"
+                    f"Chunk {chunk_num} complete: "
+                    f"{sum(1 for r in chunk_results if r.success)}/{len(chunk_results)} successful"
                 )
-
-                media_ids = None
-                if data.get("media_ids"):
-                    media_ids = [int(m) for m in data["media_ids"]]
-
-                for chunk_start in range(0, total_recipients, self.REAUTH_INTERVAL):
-                    chunk_end = min(chunk_start + self.REAUTH_INTERVAL, total_recipients)
-                    chunk = recipients[chunk_start:chunk_end]
-                    chunk_num = (chunk_start // self.REAUTH_INTERVAL) + 1
-                    total_chunks = (total_recipients + self.REAUTH_INTERVAL - 1) // self.REAUTH_INTERVAL
-
-                    logger.info(f"=" * 50)
-                    logger.info(f"CHUNK {chunk_num}/{total_chunks}: Recipients {chunk_start + 1}-{chunk_end}")
-                    logger.info(f"=" * 50)
-
-                    if chunk_start > 0:
-                        logger.info(f"Re-authenticating for chunk {chunk_num}...")
-                        await close_session(auth)
-
-                        auth_results = await authenticate_from_db(model_id=account_id)
-                        if not auth_results or not auth_results[0].get("success"):
-                            raise Exception(f"Re-authentication failed at chunk {chunk_num}")
-
-                        auth = auth_results[0]["authed"]
-                        logger.info(f"Re-authenticated successfully for chunk {chunk_num}")
-
-                    messenger = MassMessenger(auth)
-                    chunk_results = await messenger.send_mass_message_parallel(
-                        recipients=chunk,
-                        message_template=data["message_content"],
-                        media_ids=media_ids,
-                        price=data.get("price", 0),
-                        concurrent_sends=self.CONCURRENT_SENDS,
-                        batch_delay=self.BATCH_DELAY,
-                    )
-
-                    all_results.extend(chunk_results)
-
-                    for result in chunk_results:
-                        result_doc = {
-                            "user_id": result.user_id,
-                            "username": result.username,
-                            "success": result.success,
-                            "error_message": result.error,
-                            "message_id": getattr(result, 'message_id', None),
-                            "sent_at": datetime.now(timezone.utc),
-                        }
-                        await doc_ref.collection(SUBCOLLECTION_RESULTS).add(result_doc)
-
-                        if result.success and hasattr(result, 'message_id') and result.message_id:
-                            all_message_ids.append(str(result.message_id))
-
-                    current_success = sum(1 for r in all_results if r.success)
-                    current_failed = len(all_results) - current_success
-                    await doc_ref.update({
-                        "success_count": current_success,
-                        "failed_count": current_failed,
-                        "updated_at": datetime.now(timezone.utc),
-                    })
-
-                    logger.info(
-                        f"Chunk {chunk_num} complete: "
-                        f"{sum(1 for r in chunk_results if r.success)}/{len(chunk_results)} successful"
-                    )
-
-            finally:
-                await close_session(auth)
 
             success_count = sum(1 for r in all_results if r.success)
             failed_count = len(all_results) - success_count
@@ -393,6 +432,7 @@ class ScheduledMessageService:
                 "status": MessageStatus.COMPLETED.value,
                 "success_count": success_count,
                 "failed_count": failed_count,
+                "error_message": None,
                 "completed_at": datetime.now(timezone.utc),
                 "updated_at": datetime.now(timezone.utc),
             })
@@ -431,16 +471,17 @@ class ScheduledMessageService:
             sent_at=sent_at_str,
         )
 
-    async def unsend_active_message(self, account_id: str) -> bool:
-        auth_results = await authenticate_from_db(model_id=account_id)
-        if not auth_results or not auth_results[0].get("success"):
-            raise ValueError(f"Cannot authenticate account {account_id}")
+    async def unsend_active_message(self, account_id: str, session: Optional[dict] = None) -> bool:
+        if session:
+            auth = session["authed"]
+        else:
+            from modules.scheduler import get_or_create_session
+            session = await get_or_create_session(account_id)
+            if not session:
+                raise ValueError(f"Cannot authenticate account {account_id}")
+            auth = session["authed"]
 
-        auth = auth_results[0]["authed"]
-        try:
-            return await self._unsend_active_message(account_id, auth)
-        finally:
-            await close_session(auth)
+        return await self._unsend_active_message(account_id, auth)
 
     async def _unsend_active_message(self, account_id: str, auth) -> bool:
         doc_ref = self.db.collection(COLLECTION_ACTIVE).document(account_id)
